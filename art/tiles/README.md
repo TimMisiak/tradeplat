@@ -25,4 +25,22 @@ Review images here use nearest-neighbour enlargement:
 - `solid-joins.png`: irregular blob, hole, isolated block, pillar and thin ledge.
 
 The standard asset viewer also shows the strip and an autotiled blob.
-This is the first solid-ground style pass, awaiting user review.
+This solid-ground style pass is visually approved.
+
+## Spikes and one-way platforms
+
+`platforms.py` draws both tiles directly at 16×16 using hard alpha and manifest
+colors plus the art-only spike gray `#323947`, slightly darker than solid terrain.
+Spikes have two gray teeth that meet the ground without a base plate.
+One-way ledges occupy only the
+top four rows and join continuously across tiles.
+
+```sh
+python3 art/tiles/platforms.py
+npm run test:assets
+```
+
+Runtime outputs: `client/assets/tiles/spike.png` and `client/assets/tiles/oneway.png`.
+`platforms-review.png` shows four spike orientations, the ledge, and a mock level
+with repeated tiles and the approved courier and ground. One-way ledges and gray
+spikes without a base plate are visually approved.

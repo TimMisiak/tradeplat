@@ -38,14 +38,15 @@ Colors are defined in `manifest.json` → `palette`. The game uses them **now** 
 
 Solid-ground art also uses a dedicated shadow shade, `#2c3446`, defined in its
 source generator. This art-only color separates shadowed rock from the sky
-without adding a runtime palette key or changing other assets.
+without adding a runtime palette key or changing other assets. Spike art uses
+`#323947`, a slate gray slightly darker than solid terrain, instead of hazard red.
 
 | Key | Used for |
 |---|---|
 | `sky` | background behind the level |
 | `terrain`, `terrainEdge` | solid ground fill and its exposed edges |
 | `oneWay` | one-way platforms |
-| `hazard` | spikes, saws: anything that kills on touch |
+| `hazard` | hazard fallback and saws; spike art uses the gray shade above |
 | `enemy` | patrollers, flyers |
 | `player` | the local player |
 | `ghost` | other players (also drawn at reduced alpha) |
@@ -148,8 +149,10 @@ Art completion is separate from renderer/gameplay implementation.
 | Palette | Initial manifest palette in use by the player art and flat-color fallback; broader art direction still open |
 | Player — required animations | **Done and reviewed:** `idle`, `run`, `jump`, `fall`, `wallSlide`; exported and registered in the manifest |
 | Player — optional animations | Not started: `land`, `death` |
-| Solid ground | **First pass ready for review:** `solid`, all 16 cardinal4 frames exported and registered |
-| Other tiles | Not started: `spike`, `oneWay`, `postFloor`, `postWall` |
+| Solid ground | **Done and visually approved:** `solid`, all 16 cardinal4 frames exported and registered |
+| One-way platforms | **Done and visually approved:** `oneWay`; exported and registered |
+| Spikes | **Done and visually approved:** gray `spike` teeth without a base plate; exported and registered |
+| Trade post tiles | Not started: `postFloor`, `postWall` |
 | Enemies and hazards | Not started: patroller `walk`, flyer `fly`, saw `spin`; optional patroller `stomped` also outstanding |
 | Effects | Not started: dust `puff`, splat `burst` and `stain` |
 | Post sign | Not started: postSign `idle` |
@@ -167,9 +170,23 @@ tile variants can avoid obvious repetition.
 
 The native 16×16 frames are exported as a 256×16 cardinal4 strip in
 [client/assets/tiles/solid.png](client/assets/tiles/solid.png). The full strip passes
-asset validation; visual approval is pending. Source and regeneration instructions
+asset validation and is visually approved. Source and regeneration instructions
 are in [art/tiles/](art/tiles/README.md), alongside previews of all masks, an irregular
 autotiled blob, and a mock level composition with the approved courier.
+
+### Completed spikes and one-way platforms
+
+Spikes have two upward-facing slate-gray teeth, slightly darker than solid ground,
+with a dark outline and a muted top-left highlight. The teeth meet the ground
+directly without a base plate. The single 16×16 tile supports all four rotations.
+One-way platforms use a continuous brown ledge in the top four pixel rows;
+the remaining twelve rows are transparent. Both use hard alpha, drawn directly at
+native resolution; spikes add the art-only gray shade documented above.
+
+Runtime files are `client/assets/tiles/spike.png` and `client/assets/tiles/oneway.png`.
+The editable generator and a review showing rotations, repeated tiles, and a mock
+level are in [art/tiles/](art/tiles/README.md). One-way platforms and gray spikes
+without a base plate are visually approved.
 
 ### Completed player art
 

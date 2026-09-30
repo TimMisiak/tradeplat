@@ -21,7 +21,9 @@
     ]
   },
   "tiles": {
-    "solid": { "file": "tiles/solid.png", "autotile": "cardinal4" }
+    "solid": { "file": "tiles/solid.png", "autotile": "cardinal4" },
+    "spike": { "file": "tiles/spike.png" },
+    "oneWay": { "file": "tiles/oneway.png" }
   },
   "sprites": {
     "player": {
