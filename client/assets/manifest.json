@@ -21,7 +21,15 @@
     ]
   },
   "tiles": {},
-  "sprites": {},
+  "sprites": {
+    "player": {
+      "frame": [24, 24],
+      "anchor": [12, 24],
+      "anims": {
+        "idle": { "file": "sprites/player/idle.png", "frames": 4, "fps": 6, "loop": true }
+      }
+    }
+  },
   "icons": {
     "goods": {}
   }
