@@ -8,6 +8,7 @@ A web-based multiplayer game that combines **tight, Super Meat Boy-style platfor
 npm install
 npm start          # serves the game on http://localhost:3000 (PORT env overrides)
 npm test           # node --test
+npm run test:assets  # just the asset manifest check (see ART.md)
 ```
 
 You need a browser with WebGPU (current Chrome/Edge, Safari 26+, or Firefox with WebGPU enabled). There is no build step. The browser loads the ES modules directly from `client/` and `shared/`.
@@ -20,6 +21,7 @@ You need a browser with WebGPU (current Chrome/Edge, Safari 26+, or Firefox with
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Technology choices, repo layout, simulation, netcode, rendering, UI, persistence readiness |
 | [WORLDGEN.md](WORLDGEN.md) | Procedural map generation, determinism, reachability checking |
 | [ECONOMY.md](ECONOMY.md) | Goods, price models (random walk → supply/demand → production tree), trade rules |
+| [ART.md](ART.md) | Art assets: style rules, required tiles/sprites/icons, manifest format, asset viewer |
 
 Each decision is written down in one doc, and the others link to it. Every doc ends with a **Status** table and **Open questions**.
 
@@ -27,7 +29,7 @@ Each decision is written down in one doc, and the others link to it. Every doc e
 
 | # | Milestone | Main doc | Status |
 |---|---|---|---|
-| M0 | Repo skeleton, static server, WebGPU clear-screen, `node --test` running | ARCHITECTURE | not started |
+| M0 | Repo skeleton, static server, WebGPU clear-screen, `node --test` running | ARCHITECTURE, ART | **done** 2026-09-30 |
 | M1 | Shared physics plus a local single-player on a hand-written test map, with the movement feel tuned | DESIGN, ARCHITECTURE | not started |
 | M2 | World generation with the flood-fill reachability check, the tile-texture renderer, and the scrolling camera | WORLDGEN | not started |
 | M3 | Server-authoritative netcode: prediction, reconciliation, and interpolated ghosts | ARCHITECTURE | not started |

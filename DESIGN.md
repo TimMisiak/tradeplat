@@ -83,7 +83,7 @@ Enemies are **obstacles, not a combat system**. The platformer is about avoiding
 
 ## Visual direction
 
-Flat-colored tiles and simple sprite quads with a readable palette: terrain is muted, hazards are saturated red, enemies orange, and posts each have their own color. You are bright, and ghosts are desaturated and translucent. Juice is added in layers: a squash-and-stretch jump, dust particles, screen shake on death, and a death splat that stays on the level for a while (a Meat Boy nod). Art assets can replace the flat quads later without changing the renderer's design.
+Flat-colored tiles and simple sprite quads with a readable palette: terrain is muted, hazards are saturated red, enemies orange, and posts each have their own color. You are bright, and ghosts are desaturated and translucent. Juice is added in layers: a squash-and-stretch jump, dust particles, screen shake on death, and a death splat that stays on the level for a while (a Meat Boy nod). Art assets can replace the flat quads later without changing the renderer's design. The asset spec and pipeline are in [ART.md](ART.md).
 
 ## Status
 

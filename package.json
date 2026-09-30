@@ -1,0 +1,19 @@
+{
+  "name": "platform-trader",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Multiplayer platformer + trading game (WebGPU client, Node server)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/main.js",
+    "test": "node --test",
+    "test:assets": "node --test test/assets.test.js",
+    "bench": "node bench/run.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

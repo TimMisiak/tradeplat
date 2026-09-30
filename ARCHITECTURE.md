@@ -24,12 +24,13 @@ This doc covers the technology choices, the repo layout, the simulation, netcode
 ## Repo layout
 
 ```
-README.md DESIGN.md ARCHITECTURE.md WORLDGEN.md ECONOMY.md
-package.json            # "type": "module", scripts: start, test, bench
+*.md                    # all docs at the root (README, CLAUDE, DESIGN, ARCHITECTURE, WORLDGEN, ECONOMY, ART)
+package.json            # "type": "module", scripts: start, test, test:assets, bench
 server/
-  main.js               # http static server + ws upgrade on /ws
+  main.js               # entry: http server + ws on one port; startServer() for tests
+  static.js             # static files: / → client/, /shared/ → shared/ (traversal-safe)
   game.js               # world instance, fixed-tick loop, player registry
-  net.js                # connection lifecycle, message dispatch, interest sets
+  net.js                # ws connection lifecycle, message dispatch, interest sets
   market.js             # price processes, trade validation (server-only)
 shared/
   rng.js                # sfc32 seeded PRNG + helpers
@@ -46,15 +47,19 @@ client/
   input.js              # keyboard (+ gamepad later) → input bitmask
   net.js                # ws client, clock sync, reconciliation, ghost buffers
   camera.js             # follow, look-ahead, pixel snapping, bounds
+  assets.js             # asset spec + manifest validator (+ runtime loader later), see ART.md
+  assets/               # exported art: manifest.json, tiles/, sprites/, icons/ (ART.md)
   gpu/renderer.js       # device setup, tile pass, sprite pass
   gpu/shaders.js        # WGSL source strings
   ui/text.js            # runtime glyph atlas, text quads
   ui/trade.js           # trade menu state + layout
+  tools/                # dev-only DOM pages (assets.html viewer, later worldgen.html)
+art/                    # art source files (not served). See ART.md
 test/                   # *.test.js, run by node --test
-bench/                  # perf measurements that justify architecture calls
+bench/                  # perf measurements that justify architecture calls (npm run bench)
 ```
 
-The static server maps `/` → `client/` and `/shared/` → `shared/`. Client modules import shared code as `../shared/physics.js` (or the absolute path `/shared/physics.js`). The server sets `Content-Type: text/javascript` and uses `Cache-Control: no-cache` in development.
+The static server maps `/` → `client/` and `/shared/` → `shared/`. Client modules import shared code by **relative path** (`../shared/physics.js` from `client/`, `../../shared/…` from `client/gpu/`). A relative path works both in the browser (where `client/` is served at `/`, so `..` stops at the root) and in Node tests that import client modules. An absolute `/shared/` path would only work in the browser. The server sets `Content-Type: text/javascript` and uses `Cache-Control: no-cache` in development.
 
 ## Simulation
 
@@ -166,7 +171,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 
 | Milestone | Scope in this doc | State |
 |---|---|---|
-| M0 | layout, static server, ws echo, WebGPU clear, `npm test` | not started |
+| M0 | layout, static server, hello/welcome + ping/pong, 60 Hz tick clock, WebGPU letterboxed clear, asset manifest + viewer, `npm test` | **done** 2026-09-30 |
 | M1 | `physics.js` step + tuning, fixed-step client loop, sprite pass | not started |
 | M2 | tile pass, camera | not started |
 | M3 | netcode: clock sync, prediction/reconciliation, ghosts, interest sets | not started |
@@ -175,7 +180,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 
 ## Open questions
 
-- **Firefox/Safari WebGPU gaps:** do we need to lower `requiredLimits` or feature use for them? We'll check at M0 on each browser.
+- **Firefox/Safari WebGPU gaps:** M0 asks for no optional features or raised limits, so it should run anywhere WebGPU does. It has **not been tried on real browsers yet**. In the dev sandbox, headless Chromium with SwiftShader loses the device when presenting to a canvas, even for a trivial clear. The M0 pipeline was verified by rendering offscreen and reading the pixels back. Check Chrome, Firefox and Safari by hand before M1 adds anything that depends on them.
 - **Batching inputs:** send one message per tick, or batch 2–3 ticks? The M3 bench and a latency feel test decide.
 - **Hosting:** one small VPS/container per world is enough for v1. Decide when we first deploy (TLS for `wss`, process restart policy).
 - **Mobile touch controls:** out of scope for now. Precise platforming on touch screens is a design problem, not only a technical one.

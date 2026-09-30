@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "palette": {
+    "sky": "#141a2b",
+    "terrain": "#3b4252",
+    "terrainEdge": "#5a6378",
+    "oneWay": "#7a6a55",
+    "hazard": "#e63946",
+    "enemy": "#f4892b",
+    "player": "#f1f1e6",
+    "ghost": "#8a93a6",
+    "postFloor": "#6b5a45",
+    "postWall": "#4e4033",
+    "uiPanel": "#10131c",
+    "uiText": "#e8e6df",
+    "uiAccent": "#5fb3d9",
+    "money": "#f2c14e",
+    "posts": [
+      "#5fb3d9", "#7bc47f", "#e9c46a", "#c77dff", "#ff8fab", "#4dd0c8",
+      "#a3b86c", "#f4a261", "#9aa5ff", "#e07a5f", "#b5e48c", "#d4a5a5"
+    ]
+  },
+  "tiles": {},
+  "sprites": {},
+  "icons": {
+    "goods": {}
+  }
+}

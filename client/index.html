@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform Trader</title>
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #fallback {
+      position: fixed; inset: 0; margin: 0; padding: 2rem;
+      display: flex; align-items: center; justify-content: center; text-align: center;
+      color: #ddd; font: 16px/1.5 system-ui, sans-serif;
+    }
+    #fallback[hidden] { display: none; }
+    #fallback a { color: #8cf; }
+  </style>
+  <!-- Third-party browser modules go here as CDN URLs. There is no build step. -->
+  <script type="importmap">
+    { "imports": {} }
+  </script>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <p id="fallback" hidden></p>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

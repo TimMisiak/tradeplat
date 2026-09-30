@@ -13,6 +13,7 @@ Read the owning doc before changing an area. When a milestone lands, update that
 | Stack, repo layout, simulation, netcode, rendering, UI, persistence | [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Map generation, determinism, reachability | [WORLDGEN.md](WORLDGEN.md) |
 | Goods, prices, trade rules, v2/v3 economy | [ECONOMY.md](ECONOMY.md) |
+| Art: style, asset spec, manifest, viewer | [ART.md](ART.md) |
 
 Every design decision lives in exactly one doc, and other docs link to it rather than repeat it. All documentation is markdown at the repo root.
 
@@ -27,6 +28,8 @@ Every design decision lives in exactly one doc, and other docs link to it rather
 - **Worldgen output changes → bump `genVersion`** and update the golden hash test.
 - **The server is authoritative** for money, cargo, deaths and prices. The client only predicts its own movement.
 - **State is plain JSON-able data with a `version` field,** with no game state hidden in classes or closures, so persistence can be added later.
+- **Import `shared/` by relative path** (`../shared/x.js`) so the same file works in the browser and in Node tests.
+- **Art lives in `client/assets/`, listed in `manifest.json`.** Game code looks assets up by the names in `shared/tiles.js`, `shared/goods.js` and `SPRITE_SPEC`, and falls back to flat palette colors when one is missing.
 - **Minimal DOM.** The game is drawn in WebGPU, including its text. Dev tools such as `client/tools/*` may use the DOM.
 - **Measure before re-architecting.** A binary protocol, workers or sharding each need a benchmark in `bench/` first.
 
@@ -35,5 +38,6 @@ Every design decision lives in exactly one doc, and other docs link to it rather
 ```sh
 npm start        # http + ws server (PORT env, default 3000)
 npm test         # node --test
+npm run test:assets  # manifest ↔ files check only
 npm run bench    # bench/*.bench.js
 ```

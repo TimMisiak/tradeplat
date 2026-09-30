@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Asset viewer: Platform Trader</title>
+  <link rel="icon" href="data:,">
+  <!-- Dev tool, not the game, so plain DOM + Canvas2D is fine. See ART.md § Checking your work. -->
+  <style>
+    :root { --bg: #0d0f15; --fg: #e8e6df; --dim: #8a93a6; --err: #ff6b6b; --warn: #f2c14e; }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 13px/1.4 ui-monospace, monospace; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    h2 { font-size: 14px; margin: 24px 0 8px; border-bottom: 1px solid #252a36; padding-bottom: 4px; }
+    .bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 1; }
+    .grid { display: flex; flex-wrap: wrap; gap: 16px; }
+    .card { display: flex; flex-direction: column; gap: 4px; max-width: 100%; overflow-x: auto; }
+    .card small { color: var(--dim); }
+    canvas { image-rendering: pixelated; display: block; }
+    .err { color: var(--err); } .warn { color: var(--warn); } .ok { color: #7bc47f; }
+    .sw { width: 48px; height: 32px; border: 1px solid #0006; }
+    ul { margin: 4px 0; padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Asset viewer</h1>
+  <div class="bar">
+    <label>scale <input id="scale" type="range" min="1" max="8" value="4"> <span id="scaleOut">4×</span></label>
+    <label>background
+      <select id="bgMode"><option value="sky">palette sky</option><option value="checker">checker</option><option value="light">light</option></select>
+    </label>
+    <label><input id="anchors" type="checkbox" checked> anchors</label>
+    <button id="reload">reload</button>
+  </div>
+  <div id="report"></div>
+  <h2>Palette</h2><div id="palette" class="grid"></div>
+  <h2>Tiles</h2><div id="tiles" class="grid"></div>
+  <h2>Sprites</h2><div id="sprites" class="grid"></div>
+  <h2>Goods icons</h2><div id="icons" class="grid"></div>
+
+  <script type="module">
+    import { validateManifest, TILE_PX, ICON_PX, AUTOTILE, SPRITE_SPEC } from '../assets.js';
+
+    const $ = (id) => document.getElementById(id);
+    function el(tag, props = {}, ...kids) {
+      const e = Object.assign(document.createElement(tag), props);
+      e.append(...kids);
+      return e;
+    }
+
+    let manifest, images, raf = 0;
+    const state = { scale: 4, bg: 'sky', anchors: true };
+
+    // Cache-bust so edited PNGs show up on reload.
+    let bust = Date.now();
+    function loadImage(file) {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = `../assets/${file}?v=${bust}`;
+      });
+    }
+
+    async function load() {
+      bust = Date.now();
+      cancelAnimationFrame(raf);
+      images = new Map();
+      manifest = await (await fetch(`../assets/manifest.json?v=${bust}`)).json();
+      const { errors, warnings } = await validateManifest(manifest, async (file) => {
+        if (!images.has(file)) images.set(file, await loadImage(file));
+        const img = images.get(file);
+        return img ? { w: img.naturalWidth, h: img.naturalHeight } : null;
+      });
+      const report = $('report');
+      report.replaceChildren(
+        errors.length ? el('div', { className: 'err' }, `${errors.length} error(s)`, el('ul', {}, ...errors.map((e) => el('li', { textContent: e })))) : el('div', { className: 'ok', textContent: 'manifest OK' }),
+        warnings.length ? el('div', { className: 'warn' }, `${warnings.length} warning(s)`, el('ul', {}, ...warnings.map((w) => el('li', { textContent: w })))) : '',
+      );
+      render();
+    }
+
+    function paintBg(ctx, w, h) {
+      if (state.bg === 'checker') {
+        for (let y = 0; y < h; y += 8) for (let x = 0; x < w; x += 8) {
+          ctx.fillStyle = ((x + y) / 8) % 2 ? '#3a3a3a' : '#2a2a2a';
+          ctx.fillRect(x, y, 8, 8);
+        }
+      } else {
+        ctx.fillStyle = state.bg === 'light' ? '#d8d8d0' : manifest.palette?.sky ?? '#000';
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+
+    /** A canvas drawn at 1 art pixel = 1 canvas pixel, CSS-scaled with nearest filtering. */
+    function pixelCanvas(w, h) {
+      const c = el('canvas', { width: w, height: h });
+      c.style.width = `${w * state.scale}px`;
+      c.style.height = `${h * state.scale}px`;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      return { c, ctx };
+    }
+
+    const card = (canvas, title, sub) => el('div', { className: 'card' }, canvas, el('span', { textContent: title }), sub ? el('small', { textContent: sub }) : '');
+
+    // A small blob of solid tiles, so the cardinal4 edge frames can be seen joined up.
+    const BLOB = [
+      '..####....',
+      '.######.#.',
+      '########..',
+      '##.####...',
+      '.#######..',
+      '...##.....',
+    ];
+
+    function render() {
+      cancelAnimationFrame(raf);
+      const animated = [];
+
+      // palette
+      const pal = manifest.palette ?? {};
+      $('palette').replaceChildren(
+        ...Object.entries(pal).filter(([k]) => k !== 'posts').map(([k, v]) =>
+          el('div', { className: 'card' }, Object.assign(el('div', { className: 'sw' }), { style: `background:${v}` }), el('small', { textContent: `${k} ${v}` }))),
+        ...(pal.posts ?? []).map((v, i) =>
+          el('div', { className: 'card' }, Object.assign(el('div', { className: 'sw' }), { style: `background:${v}` }), el('small', { textContent: `posts[${i}]` }))),
+      );
+
+      // tiles
+      const tiles = [];
+      for (const [name, t] of Object.entries(manifest.tiles ?? {})) {
+        const img = images.get(t.file);
+        if (!img) continue;
+        const strip = pixelCanvas(img.naturalWidth, TILE_PX);
+        paintBg(strip.ctx, strip.c.width, strip.c.height);
+        strip.ctx.drawImage(img, 0, 0);
+        tiles.push(card(strip.c, name, t.autotile ? `${t.autotile} strip (frame = N|E<<1|S<<2|W<<3)` : 'single'));
+        if (t.autotile && AUTOTILE[t.autotile]) {
+          const W = BLOB[0].length, H = BLOB.length;
+          const demo = pixelCanvas(W * TILE_PX, H * TILE_PX);
+          paintBg(demo.ctx, demo.c.width, demo.c.height);
+          const at = (x, y) => BLOB[y]?.[x] === '#';
+          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+            if (!at(x, y)) continue;
+            const mask = (at(x, y - 1) ? 1 : 0) | (at(x + 1, y) ? 2 : 0) | (at(x, y + 1) ? 4 : 0) | (at(x - 1, y) ? 8 : 0);
+            demo.ctx.drawImage(img, mask * TILE_PX, 0, TILE_PX, TILE_PX, x * TILE_PX, y * TILE_PX, TILE_PX, TILE_PX);
+          }
+          tiles.push(card(demo.c, `${name} (autotiled)`, 'the blob shows how neighbouring tiles join'));
+        }
+      }
+      $('tiles').replaceChildren(...(tiles.length ? tiles : [el('small', { textContent: 'no tiles in manifest yet' })]));
+
+      // sprites (animated)
+      const sprites = [];
+      for (const [name, s] of Object.entries(manifest.sprites ?? {})) {
+        for (const [anim, a] of Object.entries(s.anims ?? {})) {
+          const img = images.get(a.file);
+          if (!img || !Array.isArray(s.frame)) continue;
+          const [fw, fh] = s.frame;
+          const pad = 4;
+          const view = pixelCanvas(fw + pad * 2, fh + pad * 2);
+          animated.push({ ...view, img, a, fw, fh, pad, anchor: s.anchor });
+          sprites.push(card(view.c, `${name}.${anim}`, `${a.frames}f @ ${a.fps}fps${a.loop ? ' loop' : ''}${SPRITE_SPEC[name] ? '' : ' (not in spec)'}`));
+        }
+      }
+      $('sprites').replaceChildren(...(sprites.length ? sprites : [el('small', { textContent: 'no sprites in manifest yet' })]));
+
+      // icons
+      const icons = [];
+      for (const [id, file] of Object.entries(manifest.icons?.goods ?? {})) {
+        const img = images.get(file);
+        if (!img) continue;
+        const v = pixelCanvas(ICON_PX, ICON_PX);
+        paintBg(v.ctx, ICON_PX, ICON_PX);
+        v.ctx.drawImage(img, 0, 0);
+        icons.push(card(v.c, id));
+      }
+      $('icons').replaceChildren(...(icons.length ? icons : [el('small', { textContent: 'no icons in manifest yet' })]));
+
+      const t0 = performance.now();
+      function tick(now) {
+        for (const s of animated) {
+          const elapsed = (now - t0) / 1000;
+          let f = Math.floor(elapsed * s.a.fps);
+          // Non-looping anims play through, hold the last frame briefly, then replay.
+          f = s.a.loop ? f % s.a.frames : Math.min(f % (s.a.frames + Math.ceil(s.a.fps / 2)), s.a.frames - 1);
+          paintBg(s.ctx, s.c.width, s.c.height);
+          s.ctx.drawImage(s.img, f * s.fw, 0, s.fw, s.fh, s.pad, s.pad, s.fw, s.fh);
+          if (state.anchors && s.anchor) {
+            s.ctx.fillStyle = '#ff00ff';
+            s.ctx.fillRect(s.pad + s.anchor[0] - 1, s.pad + s.anchor[1], 3, 1);
+            s.ctx.fillRect(s.pad + s.anchor[0], s.pad + s.anchor[1] - 1, 1, 3);
+          }
+        }
+        raf = requestAnimationFrame(tick);
+      }
+      if (animated.length) raf = requestAnimationFrame(tick);
+    }
+
+    $('scale').oninput = (e) => { state.scale = +e.target.value; $('scaleOut').textContent = `${state.scale}×`; render(); };
+    $('bgMode').onchange = (e) => { state.bg = e.target.value; render(); };
+    $('anchors').onchange = (e) => { state.anchors = e.target.checked; };
+    $('reload').onclick = load;
+    load();
+  </script>
+</body>
+</html>
