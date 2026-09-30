@@ -11,6 +11,8 @@ npm test           # node --test
 npm run test:assets  # just the asset manifest check (see ART.md)
 ```
 
+Or run it in a container with `docker compose up --build`. The compose file publishes the server on `${HOST_PORT}`. `client/` is bind-mounted, so client and art edits show up on a browser reload. Changes to `server/` or `shared/` are baked into the image, so they need a rebuild (the Rebuild/Restart button, or `docker compose up --build`).
+
 You need a browser with WebGPU (current Chrome/Edge, Safari 26+, or Firefox with WebGPU enabled). There is no build step. The browser loads the ES modules directly from `client/` and `shared/`.
 
 ## Documents

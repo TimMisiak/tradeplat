@@ -182,5 +182,5 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 
 - **Firefox/Safari WebGPU gaps:** M0 asks for no optional features or raised limits, so it should run anywhere WebGPU does. It has **not been tried on real browsers yet**. In the dev sandbox, headless Chromium with SwiftShader loses the device when presenting to a canvas, even for a trivial clear. The M0 pipeline was verified by rendering offscreen and reading the pixels back. Check Chrome, Firefox and Safari by hand before M1 adds anything that depends on them.
 - **Batching inputs:** send one message per tick, or batch 2–3 ticks? The M3 bench and a latency feel test decide.
-- **Hosting:** one small VPS/container per world is enough for v1. Decide when we first deploy (TLS for `wss`, process restart policy).
+- **Hosting:** one small VPS/container per world is enough for v1. The `Dockerfile` (node:24-alpine, production deps only, non-root, with a healthcheck) and `docker-compose.yml` run one world. Still to decide at first deploy: TLS for `wss`, which should terminate at a reverse proxy in front of the container.
 - **Mobile touch controls:** out of scope for now. Precise platforming on touch screens is a design problem, not only a technical one.

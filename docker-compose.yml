@@ -1,0 +1,14 @@
+services:
+  game:
+    build: .
+    environment:
+      PORT: "3000"
+    ports:
+      # The host port is assigned by the environment. Don't hard-code it.
+      - "${HOST_PORT}:3000"
+    volumes:
+      # There's no build step, so mounting the client makes edits to client code and
+      # art (client/assets/) show up on a browser reload. server/ and shared/ are
+      # baked into the image, so changes there need a rebuild.
+      - ./client:/app/client:ro
+    restart: unless-stopped
