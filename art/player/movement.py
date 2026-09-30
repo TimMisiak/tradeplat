@@ -15,10 +15,10 @@ def color(token):
     return PALETTE[COLORS[token]]
 
 
-def limb(im, points, token='s', boot=False):
+def limb(im, points, token='s', boot=False, width=3):
     draw = ImageDraw.Draw(im)
-    draw.line(points, fill=color('o'), width=5)
-    draw.line(points, fill=color(token), width=3)
+    draw.line(points, fill=color('o'), width=width + 2)
+    draw.line(points, fill=color(token), width=width)
     if boot:
         x, y = points[-1]
         draw.rectangle((x - 1, y, x + 2, y + 1), fill=color('o'))
@@ -59,14 +59,14 @@ def run_frame(i):
     limb(im, front, 's', True)
     body(im, 5, 12 + bob, i % 2)
     arm = [
-        [(14, 14), (12, 17), (9, 16)],
-        [(14, 15), (13, 18), (11, 18)],
-        [(14, 13), (16, 16), (18, 15)],
-        [(14, 14), (17, 16), (18, 14)],
-        [(14, 15), (15, 18), (17, 18)],
-        [(14, 13), (12, 16), (10, 15)],
+        [(14, 14), (13, 16), (11, 16)],
+        [(14, 15), (13, 17), (12, 17)],
+        [(14, 13), (15, 15), (17, 15)],
+        [(14, 14), (16, 15), (17, 14)],
+        [(14, 15), (15, 17), (16, 17)],
+        [(14, 13), (13, 15), (11, 15)],
     ][i]
-    limb(im, arm, 'w')
+    limb(im, arm, 'w', width=1)
     return im
 
 
@@ -75,7 +75,7 @@ def jump_frame(i):
     limb(im, [(11, 17), (8, 20), (7, 21 - i)], 'd', True)
     limb(im, [(13, 17), (16, 18), (16, 20 - i)], 's', True)
     body(im, 4, 11, 1)
-    limb(im, [(13, 13), (16, 14), (17, 11 - i)], 'w')
+    limb(im, [(13, 13), (15, 14), (16, 12 - i)], 'w', width=1)
     return im
 
 
@@ -84,7 +84,7 @@ def fall_frame(i):
     limb(im, [(10, 18), (9, 20), (8, 22)], 'd', True)
     limb(im, [(13, 18), (15, 20), (16, 21)], 's', True)
     body(im, 4, 12, -2 - i)
-    limb(im, [(13, 14), (16, 15 - i), (18, 13 - i)], 'w')
+    limb(im, [(13, 14), (15, 15 - i), (16, 14 - i)], 'w', width=1)
     return im
 
 
