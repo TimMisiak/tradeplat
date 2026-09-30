@@ -152,10 +152,10 @@ Art completion is separate from renderer/gameplay implementation.
 | Solid ground | **Done and visually approved:** `solid`, all 16 cardinal4 frames exported and registered |
 | One-way platforms | **Done and visually approved:** `oneWay`; exported and registered |
 | Spikes | **Done and visually approved:** gray `spike` teeth without a base plate; exported and registered |
-| Trade post tiles | Not started: `postFloor`, `postWall` |
+| Trade post tiles | **Done and visually approved:** `postFloor`, `postWall`; all 16 cardinal4 frames exported and registered for each |
 | Enemies and hazards | Not started: patroller `walk`, flyer `fly`, saw `spin`; optional patroller `stomped` also outstanding |
 | Effects | Not started: dust `puff`, splat `burst` and `stain` |
-| Post sign | Not started: postSign `idle` |
+| Post sign | **Done and visually approved:** postSign `idle`; neutral grayscale, exported and registered |
 | Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
 | Renderer support | M0: none. Tiles from M2, sprites as each entity lands (player M1, enemies and fx M5), icons M4 |
 
@@ -187,6 +187,22 @@ Runtime files are `client/assets/tiles/spike.png` and `client/assets/tiles/onewa
 The editable generator and a review showing rotations, repeated tiles, and a mock
 level are in [art/tiles/](art/tiles/README.md). One-way platforms and gray spikes
 without a base plate are visually approved.
+
+### Completed trade-post art
+
+The floor and wall strips use warm timber from the existing palette. Floors have
+a clear light top rim; walls and roofs are darker, with small iron pins at exposed
+corners. Detail stays on exposed edges so filled interiors join without a grid.
+Both strips contain all sixteen native 16×16 cardinal4 frames.
+
+The 32×16 sign hangs from two short supports and shows opposing exchange arrows.
+It uses neutral gray and white for post-color tinting, hard alpha, the (16,16)
+anchor, and one static `idle` frame. Neutral sign shades are art-only colors.
+
+Runtime files are `tiles/postfloor.png`, `tiles/postwall.png`, and
+`sprites/postsign/idle.png` under `client/assets/`. Editable sources and a preview
+of structures, all masks, joins, and sign tints are in [art/posts/](art/posts/README.md).
+All three assets are visually approved.
 
 ### Completed player art
 
