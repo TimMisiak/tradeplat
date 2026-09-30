@@ -164,10 +164,14 @@ export function step(p, input, map, t = TUNING) {
   s.vy = clamp(s.vy, -MAX_STEP, MAX_STEP);
 
   // Move and collide, one axis at a time. `tol` is how far a ramp can rise or fall
-  // under the feet in one tick of horizontal movement.
+  // under the feet in one tick of horizontal movement. An airborne box with a ramp
+  // just under its feet rides it like a grounded one: a short hop while running uphill
+  // rises slower than the ramp climbs, and the ramp would otherwise pass through the feet.
   const tol = Math.abs(s.vx) + 1;
-  moveX(s, map, t, p.onGround ? tol : 0, tol);
-  if (p.onGround) {
+  const pBottom = p.y + t.height;
+  const riding = p.onGround || floorBetween(map, p.x, t.width, pBottom, pBottom + tol, down, Infinity, true) !== Infinity;
+  moveX(s, map, t, riding ? tol : 0, tol);
+  if (riding) {
     // Walking up a ramp, or onto the flat step at its top: lift out of the ground,
     // unless that would put the head in a ceiling (then it's a wall after all).
     const bottom = s.y + t.height;
@@ -292,9 +296,9 @@ function slopeY(f, tx, ty, px) {
 /**
  * Highest walkable surface (smallest y) under the box's bottom edge [x, x+w)
  * with y in [yMin, yMax], or Infinity. Solid tops, ramp surfaces, and one-way
- * tops at or below `oneWayFrom` (unless down is held).
+ * tops at or below `oneWayFrom` (unless down is held). Only ramps if `rampsOnly`.
  */
-function floorBetween(map, x, w, yMin, yMax, down, oneWayFrom) {
+function floorBetween(map, x, w, yMin, yMax, down, oneWayFrom, rampsOnly = false) {
   let best = Infinity;
   const tx0 = first(x), tx1 = last(x, w);
   const ty0 = Math.floor(yMin / TILE_SIZE), ty1 = Math.floor(yMax / TILE_SIZE);
@@ -302,6 +306,7 @@ function floorBetween(map, x, w, yMin, yMax, down, oneWayFrom) {
     for (let tx = tx0; tx <= tx1; tx++) {
       const f = TILE_FLAGS[tileAt(map, tx, ty)];
       let top;
+      if (rampsOnly && !(f & SLOPE)) continue;
       if (f & FLAG.SOLID) top = ty * TILE_SIZE;
       else if (f & FLAG.SLOPE_R) top = slopeY(f, tx, ty, Math.min(x + w, (tx + 1) * TILE_SIZE)); // highest at the right
       else if (f & FLAG.SLOPE_L) top = slopeY(f, tx, ty, Math.max(x, tx * TILE_SIZE)); // highest at the left

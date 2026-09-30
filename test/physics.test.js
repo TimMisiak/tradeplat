@@ -366,3 +366,38 @@ test('ramps: falling onto one lands on its surface', () => {
   // The box (x 74..86) rests on the ramp's highest point under it, at its right edge.
   assert.equal(p.y + T.height, 6 * TILE_SIZE - (p.x + T.width - 5 * TILE_SIZE));
 });
+
+test('ramps: a short hop while running uphill never sinks into the ramp', () => {
+  // A long '/' ramp on the left and a long '\\' ramp on the right, meeting at a plateau.
+  const rows = [];
+  for (let y = 0; y < 12; y++) {
+    let r = '';
+    for (let x = 0; x < 40; x++) {
+      const h = 10 - y; // rows above the floor
+      if (y === 11) r += '#';
+      else if (x - 4 === h || 35 - x === h) r += x < 20 ? '/' : '\\';
+      else if (x - 4 > h && 35 - x > h) r += '#';
+      else r += '.';
+    }
+    rows.push(r);
+  }
+  const map = parseAsciiMap(rows);
+  // Surface under the box: the ramps' highest point under it, capped by the plateau.
+  const surface = (p) => {
+    const up = 11 * TILE_SIZE - Math.max(0, p.x + T.width - 4 * TILE_SIZE);
+    const down = 11 * TILE_SIZE - Math.max(0, 36 * TILE_SIZE - p.x);
+    return Math.max(TILE_SIZE, up, down);
+  };
+  for (const [startX, dir] of [[1.5, RIGHT], [38.5, LEFT]]) {
+    for (let jumpAt = 5; jumpAt < 50; jumpAt += 2) {
+      for (const hold of [1, 3, 8]) {
+        let p = settle(createPlayer(startX * TILE_SIZE, 11 * TILE_SIZE), map);
+        for (let i = 0; i < 90; i++) {
+          p = step(p, dir | (i >= jumpAt && i < jumpAt + hold ? JUMP : 0), map);
+          assert.ok(p.y + T.height <= surface(p) + 1e-9,
+            `sank ${(p.y + T.height - surface(p)).toFixed(2)}px at x=${p.x.toFixed(1)} (jump at ${jumpAt}, hold ${hold})`);
+        }
+      }
+    }
+  }
+});

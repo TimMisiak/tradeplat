@@ -73,6 +73,7 @@ The static server maps `/` → `client/` and `/shared/` → `shared/`. Client mo
 - **Ramps** (45° `slopeR`/`slopeL` tiles) are walkable surfaces, not solids:
   - The box rests on the **highest ramp point under its bottom edge**.
   - While grounded, running uphill lifts the box by up to `|vx|+1` px per tick, but not if that would push the head into a ceiling. Running downhill keeps it stuck to the surface by the same amount, so you don't hop off.
+  - An airborne box with a ramp within that margin under its feet gets the same lift and step tolerance. Otherwise a short hop while running uphill, rising slower than the ramp climbs, lets the ramp pass through the feet and leaves the player stuck inside it.
   - A solid tile that overlaps only that bottom margin is a step to walk onto, not a wall (the flat top at the end of a ramp). A ramp blocks like a wall only from its **tall side**.
   - Horizontal speed is the same on ramps as on flat ground.
   - Because the box rests on its highest corner, its centre floats up to 6 px above the ramp. `feetY()` gives the renderer the surface height under the centre, so the sprite's feet are drawn on the ramp.
