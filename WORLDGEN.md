@@ -6,6 +6,7 @@ This doc covers how a seed becomes a playable map. Game rules are in [DESIGN.md]
 
 - **One large, continuous, scrolling map** per server, generated fresh on every server start.
 - Every point of interest (trade posts, the spawn) can be **reached**. In v1 that is checked by flood fill (see below).
+- **No pits.** Anywhere you can get to, you can get back out of. This is checked with a jump model (see [Pits](#pits)).
 - **Deterministic.** Client and server build the identical map from `{seed, genVersion}`, so the map is never sent over the network.
 - **Fast:** under 200 ms in the browser for the v1 map size. A benchmark tracks this.
 
@@ -50,6 +51,7 @@ Stages run in order, and each takes the map plus its own RNG sub-stream.
    - The path follows a noisy curve, moving **diagonally, one row per column** (these become ramps). It only goes straight up or down when it lags the curve by more than `ROUTE_MAX_LAG` (4) rows. Opposite diagonals always have a flat step between them.
    - The brush clears the point's column from the feet row up 3 rows, plus 3 rows of headroom in the next column. It leaves the next column's feet row alone, so on a diagonal each column's floor sits right under its own point: a clean 1-tile staircase.
    - Then one-way platforms (up to 4 wide) are added wherever the path goes further than the **`ENVELOPE`** allows without support: `gap` = 4 tiles across, or `stepUp` = 3 rows up. Stacked one-ways in a vertical shaft make a ladder you jump up through.
+   - The path is walked **both ways**, so every drop is also a climb with a ladder, and each route can be run in either direction. A climb is measured from the row the feet rest on, in the path point's own column.
    - `ENVELOPE` lives in `worldgen.js` and deliberately does **not** read `TUNING`, so tweaking the movement feel doesn't change any maps. Instead, `test/worldgen.test.js` checks that the current physics can still climb a `stepUp` ledge and clear a `gap` jump.
    - This makes routes *likely* jumpable even though the v1 check doesn't prove it.
 5. **Hazards and spawners.**
@@ -60,8 +62,9 @@ Stages run in order, and each takes the map plus its own RNG sub-stream.
    - Spawners are recorded as data: `{id, kind, x, y, params}`. [`shared/enemies.js`](ARCHITECTURE.md#enemies) turns them into motion.
 6. **Reachability check and repair** (below).
 7. **Rampify.** Every 1-tile floor step anywhere (surface, route staircases, repair tunnels, natural cave floors) becomes a 45° ramp. The step needs two open rows of headroom above it, and the ground must continue past it. 1-wide bumps and post tiles are left alone. The conditions are read from a snapshot, so ramps placed in this pass don't affect each other. About 2,200 ramps per world.
+8. **Pit fill** ([Pits](#pits)). Runs on the final ramped map, since ramps change where you can walk.
 
-The output is a plain object: `{version, seed, attempt, w, h, tiles, posts[], spawnPost, spawners[], hash, stats, debug}`. `stats` holds the number of platforms and repair tunnels and the reachable tile count. `debug.routes` holds the carved paths, used by the preview tool. Neither is part of the hash.
+The output is a plain object: `{version, seed, attempt, w, h, tiles, posts[], spawnPost, spawners[], hash, stats, debug}`. `stats` holds the number of platforms, repair tunnels, pit tiles filled and ramps, and the reachable tile count. `debug.routes` holds the carved paths, used by the preview tool. Neither is part of the hash.
 
 ### Where the seed comes from
 
@@ -80,7 +83,26 @@ The v1 check is a **flood fill over non-solid tiles**, deliberately simple.
   - For each post that wasn't reached, carve a tunnel (same brush as routes) from the nearest filled tile to its doorway: vertical first, then horizontal. Add platforms along it with the same envelope rule, and run the fill again.
   - Repair is limited to a few rounds.
   - If it still fails, regenerate with the next sub-seed (`seed, attempt+1`). This loop is deterministic, so the client ends up on the same attempt.
-- **Known gap:** flood fill treats every connected air tile as reachable, **ignoring gravity and jump height**. A post at the top of a 20-tile vertical shaft passes the check, but nobody can jump up to it. Step 4's jump envelope makes this rare but not impossible. Playtesting and the preview tool (below) are how we catch it until v2.
+- **Known gap:** flood fill treats every connected air tile as reachable, **ignoring gravity and jump height**. A post at the top of a 20-tile vertical shaft passes the check, but nobody can jump up to it. Step 4's jump envelope makes this rare but not impossible: the pits model below finds a post like this in about 3% of seeds (6 of 200), which are not rejected yet. Playtesting and the preview tool (below) are how we catch it until v2.
+
+## Pits
+
+A pit is somewhere you can fall or walk into but can't climb back out of. Routes cut into natural caves, and before this check about 650 standable tiles per world were pits, mostly cave floors more than 3 rows below the way in.
+
+`findTraps(map, start)` checks gravity with a jump model built on `ENVELOPE`:
+
+- A player state is a tile (the feet row, with the body also filling the row above) plus how much rise and sideways travel is left in the current jump.
+- Standing on a floor, a one-way or a ramp refills both: up to `stepUp` rows up, then up to `gap` tiles sideways. Once you fall, you can't rise again, and you drift up to one tile sideways per row fallen. You can rise and drop through one-ways. Ramps can be walked on but not passed through from above or below.
+- Each tile keeps a 20-bit mask of its states, so a search over the whole map takes about 20 ms. The search runs forward from the spawn (where you can go) and backward (where you can come back from). A pit tile is in the first set and not the second.
+- **Wall jumps aren't modelled.** That is conservative: a pit you could wall-jump out of still counts as a pit.
+
+**Repair: fill it in.** Every tile you can reach but never get back from becomes solid, together with any head room above it that you never stand in. Ramps buried by the fill become solid too. That raises each pit's floor to the level where you can climb out, so dead-end caves turn into rock. Nothing you *can* get back from is touched, so routes and posts stay connected.
+
+- The check runs again after filling, for up to a few rounds.
+- If a post's spawn tile is in a pit, the attempt fails and the next sub-seed is tried (about 3 in 600 seeds).
+- About 6,000 tiles are filled per world.
+
+This check is the first half of [reachability v2](#reachability-v2-future): it models jumps, but with `ENVELOPE` numbers instead of simulating `step()`.
 
 ## Reachability v2 (future)
 
@@ -99,12 +121,13 @@ Because this uses the real step function, it stays correct when the movement tun
 - `test/worldgen.test.js`:
   - The golden hash matches for a fixed seed.
   - The same seed gives the same world.
-  - 200 seeds all pass reachability, with well-formed, uniquely named posts and a spawn tile standing on floor.
+  - 200 seeds all pass reachability and have no pits, with well-formed, uniquely named posts and a spawn tile standing on floor.
+  - `findTraps` flags a pit one row deeper than `stepUp`, but not one exactly `stepUp` deep or one with a one-way halfway up.
   - All three post kinds appear across seeds.
   - Generation time stays under budget.
   - The physics still beats `ENVELOPE`.
   - RNG and noise properties.
-- `npm run bench -- worldgen`: 50 worlds. Measured 2026-09-30 in Node 24 (genVersion 2, with ramps): **mean 81 ms, p95 100 ms, max 117 ms**, no retries, no repair tunnels, about 88 platforms per world.
+- `npm run bench -- worldgen`: 50 worlds. Measured 2026-09-30 in Node 24 (genVersion 3, with pit fill): **mean 126 ms, p95 147 ms, max 202 ms**, no retries, no repair tunnels, about 152 platforms and 6,000 filled pit tiles per world. The two pit checks cost about 40 ms of that (genVersion 2 was mean 81 ms, p95 100 ms).
 
 ## Status
 
@@ -113,6 +136,7 @@ Because this uses the real step function, it stays correct when the movement tun
 | M1 | Hand-written test map in the same format (not generated): `shared/maps/test.js` | **done** 2026-09-30 |
 | M2 | rng, noise, pipeline stages 1–4 and 6, map hash, server seed + client regen/verify, preview tool | **done** 2026-09-30 |
 | M2.1 | 45° ramps: one-row-per-column surface, post flats relaxed into ramps, diagonal routes, rampify pass (genVersion 2) | **done** 2026-09-30 |
+| M2.2 | No pits: route platforms both ways, `findTraps` jump model, pit fill (genVersion 3) | **done** 2026-09-30 |
 | M5 | stage 5 (hazards, spawners) | not started |
 | M6+ | reachability v2 | not started |
 
@@ -121,6 +145,8 @@ Because this uses the real step function, it stays correct when the movement tun
 - **Only floors get ramps.** Ceilings, and the undersides of islands, keep their 1-tile stair-step look. That's fine for play, since you rarely touch a ceiling. Ceiling ramps would need their own tile type and physics.
 - **Ramps are all 45°.** Gentler 22.5° ramps (two tiles per row) would make rolling hills look softer. They'd need two more tile types and matching physics, and the one-row-per-column limit would become a choice between the two slopes.
 - **Sky posts** depend on route platforms, which the flood fill can't check (see the known gap above). Watch for them in the preview tool and in playtests.
+- **Pits are filled, not laddered.** Filling is simple and always works, but it removes cave space that routes open into. Ladders of one-ways into each pit would keep that space for exploring and spawners (M5), but they need another round of checks.
+- **Gravity-unreachable posts:** `findTraps` also returns `reached`, so the attempt loop could reject the ~3% of seeds with a post you can't jump up to. Should it?
 
 - **Map size:** is 1024 × 256 right? We'll tune it to how long a post-to-post run should take (target: about 30–90 s per route).
 - **Biomes:** should different regions have distinct looks and hazards (and later, the goods produced there, see [ECONOMY.md § v3](ECONOMY.md#v3-production-tree))?

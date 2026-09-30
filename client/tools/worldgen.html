@@ -101,7 +101,7 @@
       $('stats').textContent =
         `genVersion ${GEN_VERSION}  seed ${world.seed}  attempt ${world.attempt}  hash ${world.hash}  ${ms.toFixed(0)} ms\n` +
         `${world.posts.length} posts  spawn: ${world.posts[world.spawnPost].name}  routes ${world.debug.edges.length}  ` +
-        `platforms ${world.stats.platforms}  repair tunnels ${world.stats.tunnels}  reachable tiles ${world.stats.reachable}`;
+        `platforms ${world.stats.platforms}  repair tunnels ${world.stats.tunnels}  pit tiles filled ${world.stats.filled}  reachable tiles ${world.stats.reachable}`;
     }
 
     $('prev').onclick = () => { $('seed').value = Math.max(0, Number($('seed').value) - 1); draw(); };

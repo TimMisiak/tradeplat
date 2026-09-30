@@ -8,7 +8,7 @@ import { createRng, hashString } from './rng.js';
 import { fbm, noise1, noise2 } from './noise.js';
 import { FLAG, SLOPE, TILE, TILE_FLAGS, createMap } from './tiles.js';
 
-export const GEN_VERSION = 2;
+export const GEN_VERSION = 3;
 export const WORLD_W = 1024;
 export const WORLD_H = 256;
 
@@ -90,7 +90,7 @@ function tryGenerate(seed, w, h) {
   paintSurface(map, surface);
   for (const p of posts) stampPost(map, p);
   const { routes, edges } = carveRoutes(map, rng.fork('routes'), posts);
-  const stats = { tunnels: 0, platforms: 0, ramps: 0, reachable: 0 };
+  const stats = { tunnels: 0, platforms: 0, filled: 0, ramps: 0, reachable: 0 };
   stats.platforms += addPlatforms(map, routes);
 
   // Reachability v1: flood fill from the spawn post, repairing with tunnels.
@@ -113,6 +113,21 @@ function tryGenerate(seed, w, h) {
 
   // Every 1-tile floor step (terrain, routes, caves, tunnels) becomes a ramp.
   stats.ramps = rampify(map);
+
+  // Pits: fill in anywhere you could get to but not get back from, which raises
+  // each pit's floor to where you can climb out. A post in a pit can't be filled.
+  for (let round = 0; ; round++) {
+    const { trapped, count } = findTraps(map, posts[spawnPost].spawn);
+    if (count === 0) break;
+    if (round >= MAX_REPAIR_ROUNDS) return { ok: false, error: `${count} trapped tiles` };
+    const stuck = posts.find((p) => trapped[idx(map, p.spawn.tx, p.spawn.ty)]);
+    if (stuck) return { ok: false, error: `${stuck.name} is in a pit` };
+    for (let i = 0; i < trapped.length; i++) if (trapped[i]) { map.tiles[i] = TILE.solid; stats.filled++; }
+    // A ramp buried under the fill is just rock now.
+    for (let i = w; i < trapped.length; i++) {
+      if ((TILE_FLAGS[map.tiles[i]] & SLOPE) && trapped[i - w]) { map.tiles[i] = TILE.solid; stats.ramps--; }
+    }
+  }
   for (const p of posts) delete p.isSpawn;
   return {
     ok: true,
@@ -455,24 +470,28 @@ export function rampify(map) {
 }
 
 /**
- * Walk each path and drop one-way platforms wherever the player would have gone
- * too far (in ENVELOPE terms) without anything to stand on. Returns the count.
+ * Walk each path, both ways, and drop one-way platforms wherever the player would
+ * have gone too far (in ENVELOPE terms) without anything to stand on. Walking it
+ * backwards turns every drop into a climb, so a route can be run in both
+ * directions. Returns the count.
  */
 function addPlatforms(map, paths) {
   let placed = 0;
-  const supported = (x, y) => {
+  // The row the player's feet rest on near (x, y), or -1 if there's no floor within 2 rows.
+  const standRow = (x, y) => {
     for (let dy = 1; dy <= 2; dy++) {
-      const f = TILE_FLAGS[get(map, x, y + dy)] | TILE_FLAGS[get(map, x + 1, y + dy)];
-      if (f & (FLAG.SOLID | FLAG.ONE_WAY | SLOPE)) return true;
+      if (TILE_FLAGS[get(map, x, y + dy)] & (FLAG.SOLID | FLAG.ONE_WAY | SLOPE)) return y + dy - 1;
     }
-    return false;
+    return -1;
   };
-  for (const path of paths) {
+  for (const path of paths.flatMap((p) => [p, p.toReversed()])) {
     let last = null;
     for (const [x, y] of path) {
-      if (supported(x, y)) { last = { x, y }; continue; }
+      // Climbs are measured from where the feet actually rest, not from the path point.
+      const sy = standRow(x, y);
+      if (sy >= 0) { last = { x, y: sy }; continue; }
       if (!last) { last = { x, y }; continue; }
-      if (x - last.x > ENVELOPE.gap || last.y - y >= ENVELOPE.stepUp) {
+      if (Math.abs(x - last.x) > ENVELOPE.gap || last.y - y >= ENVELOPE.stepUp) {
         for (let px = x - 1; px <= x + 2; px++) {
           if (get(map, px, y + 1) === TILE.empty) set(map, px, y + 1, TILE.oneWay);
         }
@@ -513,6 +532,117 @@ export function floodFill(map, start) {
   function push(j) {
     if (!visited[j] && !(TILE_FLAGS[tiles[j]] & blocked)) { visited[j] = 1; stack[sp++] = j; }
   }
+}
+
+/**
+ * Pits: standable tiles the player can get to from `start` but can't get back
+ * from, moving within ENVELOPE (jump up to stepUp rows, up to gap tiles sideways
+ * per jump, drift up to one tile per row while falling, drop through one-ways).
+ * Wall jumps aren't modelled, so a pit counts as a trap even if a wall jump
+ * would get you out.
+ *
+ * The search runs over states (tile, rise left r, sideways left g). A tile's
+ * feet row is its own row, and the body also fills the row above. Standing on a
+ * tile refills both budgets. Each tile keeps a bitmask of its states, bit
+ * r * (gap + 1) + g, so every move is a few bit operations on the whole mask.
+ * Forward from `start` gives where you can go; backward gives where you can
+ * come back from. A trap is in the first and not the second.
+ *
+ * @returns {{trapped: Uint8Array, reached: Uint8Array, count: number}} per tile;
+ *   `count` is the number of standable trap tiles (trapped === 1).
+ */
+export function findTraps(map, start) {
+  const { w, h, tiles } = map;
+  const U = ENVELOPE.stepUp, G = ENVELOPE.gap, W1 = G + 1;
+  const n = w * h;
+  const ROW0 = (1 << W1) - 1; // r = 0
+  const ALL = (1 << (W1 * (U + 1))) - 1;
+  const TOP_ROW = ROW0 << (U * W1); // r = U
+  const FULL = 1 << (U * W1 + G); // r = U, g = G: just landed
+  let G0 = 0; // g = 0, every r
+  for (let r = 0; r <= U; r++) G0 |= 1 << (r * W1);
+  const GMAX = G0 << G; // g = G, every r
+  const everyRow = (m) => { let out = 0; for (let r = 0; r <= U; r++) out |= m << (r * W1); return out; };
+  const anyRow = (m) => { let out = 0; for (let r = 0; r <= U; r++) out |= (m >>> (r * W1)) & ROW0; return out; };
+
+  const blocked = (i) => TILE_FLAGS[tiles[i]] & (FLAG.SOLID | FLAG.HAZARD);
+  // body: the feet tile is free or a ramp (you stand in it), and the tile above is
+  // free. So you can't move through a ramp from above or below. stand: body plus
+  // a floor to rest on, or a ramp. The outer rows and columns never get a body,
+  // so i ± 1 and i ± w never leave the map or wrap to another row.
+  const body = new Uint8Array(n);
+  const stand = new Uint8Array(n);
+  for (let i = w; i < n - w; i++) {
+    const x = i % w;
+    if (x === 0 || x === w - 1 || blocked(i) || blocked(i - w) || (TILE_FLAGS[tiles[i - w]] & SLOPE)) continue;
+    body[i] = 1;
+    if ((TILE_FLAGS[tiles[i + w]] & (FLAG.SOLID | FLAG.ONE_WAY | SLOPE)) || (TILE_FLAGS[tiles[i]] & SLOPE)) stand[i] = 1;
+  }
+  const si = start.ty * w + start.tx;
+  if (!body[si]) return { trapped: new Uint8Array(n), reached: new Uint8Array(n), count: 0 };
+
+  // FIFO ring of tiles whose mask grew. A tile is in it at most once, so n slots suffice.
+  const queue = new Int32Array(n);
+  const queued = new Uint8Array(n);
+  let head = 0, tail = 0;
+  const run = (mask, expand) => {
+    mask[si] = FULL;
+    queue[tail++] = si;
+    queued[si] = 1;
+    while (head !== tail) {
+      const i = queue[head];
+      head = head + 1 === n ? 0 : head + 1;
+      queued[i] = 0;
+      expand(i, mask[i]);
+    }
+  };
+  const add = (mask, j, m) => {
+    if (!body[j] || (mask[j] | m) === mask[j]) return;
+    mask[j] |= m;
+    if (!queued[j]) {
+      queued[j] = 1;
+      queue[tail] = j;
+      tail = tail + 1 === n ? 0 : tail + 1;
+    }
+  };
+
+  // Forward: rise (r-1), step sideways (g-1), fall (r=0, g+1 up to G), land (FULL).
+  const fwd = new Uint32Array(n);
+  run(fwd, (i, m) => {
+    if (stand[i] && !(m & FULL)) m = fwd[i] |= FULL;
+    add(fwd, i - w, m >>> W1);
+    const side = (m & ~G0) >>> 1;
+    add(fwd, i - 1, side);
+    add(fwd, i + 1, side);
+    const g = anyRow(m);
+    add(fwd, i + w, ((g << 1) & ROW0) | (g & (1 << G)));
+  });
+
+  // Backward: the same moves reversed. mask[i] = states at i that can get back to start.
+  const back = new Uint32Array(n);
+  run(back, (i, m) => {
+    if (stand[i] && (m & FULL) && m !== ALL) m = back[i] = ALL;
+    add(back, i + w, (m & ~TOP_ROW) << W1);
+    const side = (m & ~GMAX) << 1;
+    add(back, i - 1, side);
+    add(back, i + 1, side);
+    const g0 = m & ROW0;
+    add(back, i - w, everyRow((g0 >>> 1) | (g0 & (1 << G))));
+  });
+
+  // 1 = a standable tile you can reach but not leave. 2 = any other tile you can
+  // reach but not leave (the air of a pit), or the head room above one that you
+  // never stand in.
+  const trapped = new Uint8Array(n);
+  const reached = new Uint8Array(n); // standable tiles you can get to
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    if (stand[i] && (fwd[i] & FULL)) reached[i] = 1;
+    if (!fwd[i] || (fwd[i] & back[i])) continue;
+    if (stand[i]) { trapped[i] = 1; count++; } else trapped[i] = 2;
+    if (!fwd[i - w]) trapped[i - w] = 2;
+  }
+  return { trapped, reached, count };
 }
 
 function zoneReached(map, visited, z) {

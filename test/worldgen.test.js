@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ENVELOPE, GEN_VERSION, floodFill, generateWorld, rampify } from '../shared/worldgen.js';
+import { ENVELOPE, GEN_VERSION, findTraps, floodFill, generateWorld, rampify } from '../shared/worldgen.js';
 import { createRng } from '../shared/rng.js';
 import { fbm, noise1, noise2 } from '../shared/noise.js';
 import { INPUT, createPlayer, step } from '../shared/physics.js';
@@ -8,7 +8,7 @@ import { FLAG, TILE, TILE_FLAGS, TILE_SIZE, parseAsciiMap } from '../shared/tile
 
 // Update ONLY for intentional generator changes, together with a GEN_VERSION bump
 // (clients check the hash against the server's). Say so in the commit.
-const GOLDEN = { seed: 1, genVersion: 2, hash: '736b157e' };
+const GOLDEN = { seed: 1, genVersion: 3, hash: '182fea44' };
 
 test('golden hash: generator output for a fixed seed is unchanged', () => {
   const w = generateWorld(GOLDEN.seed);
@@ -25,7 +25,7 @@ test('same seed, same world', () => {
   assert.notEqual(generateWorld(987654322).hash, a.hash);
 });
 
-test('200 seeds: every post reachable from the spawn post, posts well-formed', () => {
+test('200 seeds: every post reachable from the spawn post, no pits, posts well-formed', () => {
   const kinds = { surface: 0, cave: 0, sky: 0 };
   for (let seed = 1000; seed < 1200; seed++) {
     const w = generateWorld(seed);
@@ -44,6 +44,7 @@ test('200 seeds: every post reachable from the spawn post, posts well-formed', (
       }
       assert.ok(reached, `seed ${seed}: ${p.name} unreachable`);
     }
+    assert.equal(findTraps(w, spawn).count, 0, `seed ${seed}: has pits you can't climb out of`);
   }
   // All three kinds show up across seeds.
   for (const [k, n] of Object.entries(kinds)) assert.ok(n > 20, `${k} posts: ${n}`);
@@ -93,6 +94,27 @@ test('physics can jump an ENVELOPE.gap-tile gap from a short run-up', () => {
     }
   }
   assert.ok(crossed);
+});
+
+test('findTraps: a pit deeper than ENVELOPE.stepUp is a trap, a shallower one is not', () => {
+  const pit = (depth) => {
+    const rows = ['##########', '#........#', '#........#', '#........#', '#@.......#', '####..####'];
+    for (let r = 1; r < depth; r++) rows.push('####..####');
+    rows.push('##########');
+    const map = parseAsciiMap(rows);
+    const s = map.markers['@'][0];
+    // The feet row of the pit floor, below the ledge the player starts on.
+    return { ...findTraps(map, s), floor: (s.ty + depth) * map.w + 4 };
+  };
+  const shallow = pit(ENVELOPE.stepUp);
+  assert.equal(shallow.count, 0);
+  assert.equal(shallow.reached[shallow.floor], 1);
+  const deep = pit(ENVELOPE.stepUp + 1);
+  assert.equal(deep.trapped[deep.floor], 1);
+  assert.equal(deep.count, 2, 'both floor tiles of the 2-wide pit');
+  // A one-way halfway up turns the deep pit into two climbable steps.
+  const map = parseAsciiMap(['##########', '#........#', '#........#', '#........#', '#@.......#', '####..####', '####..####', '####==####', '####..####', '####..####', '##########']);
+  assert.equal(findTraps(map, map.markers['@'][0]).count, 0);
 });
 
 test('rng: deterministic, forks are independent, ranges hold', () => {
