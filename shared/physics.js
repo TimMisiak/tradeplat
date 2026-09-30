@@ -12,6 +12,7 @@
 // the highest ramp point under its bottom edge. Running uphill lifts it by up to
 // |vx|+1 px per tick, and running downhill keeps it stuck to the surface by the
 // same amount. A ramp blocks like a wall only from its tall side.
+import { hashString } from './rng.js';
 import { FLAG, SLOPE, TILE_FLAGS, TILE_SIZE, tileAt } from './tiles.js';
 
 export const TICK_RATE = 60;
@@ -24,7 +25,12 @@ export const INPUT = Object.freeze({
   DOWN: 1 << 3,
   JUMP: 1 << 4,
   INTERACT: 1 << 5,
+  // Not movement: the host resets to spawn before this tick (dev R key until M5
+  // death/respawn). stepInput() handles it, and step() never sees it.
+  RESPAWN: 1 << 6,
 });
+/** Every bit a client may send. */
+export const INPUT_MASK = (1 << 7) - 1;
 
 /**
  * Movement tuning. Every feel constant lives here (DESIGN.md). Values are per
@@ -93,6 +99,43 @@ export function createPlayer(footX, footY, tuning = TUNING) {
     jumping: false, // rising from a jump, so releasing the button cuts it
     buttons: 0, // last tick's input, for edge detection
   };
+}
+
+/** A player standing on tile (tx, ty), such as a post's spawn tile. */
+export function spawnAt(tx, ty, tuning = TUNING) {
+  return createPlayer((tx + 0.5) * TILE_SIZE, (ty + 1) * TILE_SIZE, tuning);
+}
+
+/**
+ * One tick as a host runs it: the RESPAWN bit resets to `spawn`, then step().
+ * Client prediction, client replay and the server all go through this.
+ * @param {PlayerState} p @param {number} input @param {PlayerState} spawn
+ */
+export function stepInput(p, input, map, spawn, t = TUNING) {
+  if (input & INPUT.RESPAWN) p = spawn;
+  return step(p, input & ~INPUT.RESPAWN, map, t);
+}
+
+/** Short hash of a tuning table. Client and server compare it in welcome (ARCHITECTURE.md § Connection). */
+export function tuningHash(t = TUNING) {
+  const text = Object.keys(t).sort().map((k) => `${k}=${t[k]}`).join(';');
+  return hashString(text).toString(16).padStart(8, '0');
+}
+
+/** Whether two player states are identical, field by field. Reconciliation uses it. */
+export function sameState(a, b) {
+  for (const k in a) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+/** Animation names, in wire order (ghost snapshots send the index). Match SPRITE_SPEC.player (ART.md). */
+export const ANIMS = Object.freeze(['idle', 'run', 'jump', 'fall', 'wallSlide']);
+
+/** Which animation fits this physics state. */
+export function animFor(p) {
+  if (p.onGround) return Math.abs(p.vx) > 0.1 ? 'run' : 'idle';
+  if (p.wallDir !== 0 && p.vy > 0) return 'wallSlide';
+  return p.vy < 0 ? 'jump' : 'fall';
 }
 
 const approach = (v, target, rate) => (v < target ? Math.min(v + rate, target) : Math.max(v - rate, target));

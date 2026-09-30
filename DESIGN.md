@@ -36,7 +36,7 @@ The target is Super Meat Boy: fast, precise and forgiving where it matters.
 | Wall jump | Kicks you up and away; input briefly locked away from the wall | ~8 frame lock |
 | Terminal velocity | Caps fall speed so collisions stay readable and stable | ≤ 1 tile/frame |
 
-All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. **R** respawns (a dev convenience until M5). `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
+All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. Edits apply only in the offline dev worlds (`?seed=N` or `?map=test`). Online, the server's physics is authoritative, so the client uses `TUNING` and the panel says your edits are ignored. **R** respawns (a dev convenience until M5). `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
 
 **Ramps.** The world has 45° ramps, and the generator turns every 1-tile floor step into one ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline)), so hills and tunnels can be run up and down at full speed without jumping. Horizontal speed is the same on a ramp as on flat ground. A ramp's tall side is a wall. Precision challenges come from gaps, walls and hazards, not from staircases.
 
@@ -96,7 +96,7 @@ Flat-colored tiles and simple sprite quads with a readable palette: terrain is m
 | Cargo / death | designed; built in M4/M5 |
 | Trade posts / UI | designed; M4 |
 | Enemies v1 | designed; M5 |
-| Multiplayer ghosts | designed; M3 |
+| Multiplayer ghosts | built (M3): translucent, tinted, interpolated. Name tags wait for the M4 text atlas |
 
 ## Open questions
 

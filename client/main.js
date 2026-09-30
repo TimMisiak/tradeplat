@@ -1,14 +1,15 @@
 // Client entry: boot the renderer, assets and network, then run the game loop.
-// Single-player movement on the server's generated world (seed from the welcome
-// message). Dev overrides: ?seed=N generates locally, ?map=test loads the M1 test level.
+// Online: the server's world (seed from the welcome message), own movement predicted
+// and reconciled, other players drawn as ghosts (ARCHITECTURE.md § Netcode).
+// Dev overrides play offline: ?seed=N generates locally, ?map=test loads the M1 test level.
 import { createRenderer, SpriteBatch, WebGPUUnavailableError } from './gpu/renderer.js';
 import { hexToRgba, loadManifest, loadSpriteAtlas, loadTileArt } from './assets.js';
 import { createCamera } from './camera.js';
 import { createInput } from './input.js';
-import { createNet } from './net.js';
+import { INTERP_TICKS, createGhosts, createNet, createPredictor } from './net.js';
 import { animFor, createAnimator, drawPlayer } from './player-view.js';
 import { createTuningPanel } from './dev/tuning.js';
-import { TICK_RATE, createPlayer, step } from '../shared/physics.js';
+import { ANIMS, INPUT, TICK_RATE, TUNING, spawnAt, tuningHash } from '../shared/physics.js';
 import { FLAG, SLOPE, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
 import { createTestMap } from '../shared/maps/test.js';
 import { GEN_VERSION, generateWorld } from '../shared/worldgen.js';
@@ -79,9 +80,17 @@ async function boot() {
   const { texture: tileArt, art } = await loadTileArt(renderer.device, manifest);
   if (tileArt) renderer.setTileArt(tileArt);
   const playerColors = { player: color('player'), outline: shade(color('sky'), 0.5) };
+  // Ghosts: translucent and cooler, behind the local player (DESIGN.md § Multiplayer experience).
+  const ghostColors = { player: color('ghost', 0.6), outline: shade(color('sky', 0.6), 0.5), tint: [0.7, 0.78, 0.95, 0.55] };
 
   const panel = createTuningPanel();
-  const tuning = panel.tuning;
+  const params = new URLSearchParams(location.search);
+  // Dev worlds (?seed, ?map) aren't the server's, so nothing is sent or reconciled there.
+  const online = params.get('map') !== 'test' && !params.has('seed');
+  // Online, we simulate exactly what the server does, so tuning-panel edits can't
+  // apply: they would make our player drift from the server (and from how others see
+  // us) with nothing to correct it. They apply in the offline dev worlds.
+  const tuning = online ? TUNING : panel.tuning;
   const center = (p) => [p.x + tuning.width / 2, p.y + tuning.height / 2];
   const input = createInput();
   const camera = createCamera();
@@ -90,24 +99,27 @@ async function boot() {
   const styles = tileStyles(color, art);
 
   // World: loaded from the server's seed, or from a dev override.
-  const params = new URLSearchParams(location.search);
   /** @type {{map: import('../shared/tiles.js').TileMap, spawn: {tx: number, ty: number}, seed: number | null, label: string} | null} */
   let world = null;
-  let prev = null;
-  let cur = null;
-  const spawn = () => createPlayer((world.spawn.tx + 0.5) * TILE_SIZE, (world.spawn.ty + 1) * TILE_SIZE, tuning);
-  const respawn = () => {
-    prev = cur = spawn();
-    camera.snap(...center(cur), world.map);
-  };
+  /** @type {ReturnType<typeof createPredictor> | null} */
+  let pred = null;
+  const ghosts = createGhosts();
+  /** id → animator, so each ghost's animation plays from its own start. */
+  const ghostAnims = new Map();
+  const TUNING_HASH = tuningHash(TUNING);
+  const panelEdited = () => tuningHash(panel.tuning) !== TUNING_HASH;
+  if (online && panelEdited()) console.warn('[dev] saved tuning-panel edits are ignored online. They apply with ?seed=N or ?map=test');
 
   function useWorld(next) {
     world = next;
     renderer.setMap(world.map, styles);
-    respawn();
+    pred = createPredictor(world.map, spawnAt(world.spawn.tx, world.spawn.ty, tuning), tuning);
+    ghosts.clear();
+    camera.snap(...center(pred.cur), world.map);
     console.info(`[world] ${world.label}`);
   }
 
+  /** @returns {boolean} false if the server's world doesn't match ours */
   function useSeed(seed, expected) {
     const t0 = performance.now();
     const gen = generateWorld(seed);
@@ -116,10 +128,11 @@ async function boot() {
       // Different generator code on each side (stale cache or a deploy mid-session).
       console.error(`[world] mismatch: server genVersion ${expected.genVersion} hash ${expected.hash}, client genVersion ${GEN_VERSION} hash ${gen.hash}`);
       showFallback('This page is out of date with the server. Reload to continue.');
-      return;
+      return false;
     }
     const post = gen.posts[gen.spawnPost];
     useWorld({ map: gen, spawn: post.spawn, seed, label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}` });
+    return true;
   }
 
   const net = createNet({ name: params.get('name') ?? 'Trader' });
@@ -129,20 +142,40 @@ async function boot() {
   } else if (params.has('seed')) {
     useSeed(Number(params.get('seed')) >>> 0, null);
   } else {
-    // The server restarting means a new world; regenerate when the seed changes.
     net.onWelcome.push((msg) => {
-      if (msg.world && msg.world.seed !== world?.seed) useSeed(msg.world.seed, msg.world);
+      if (msg.tuningHash !== TUNING_HASH) {
+        console.error(`[net] tuning mismatch: server ${msg.tuningHash}, client ${TUNING_HASH}`);
+        showFallback('This page is out of date with the server. Reload to continue.');
+        return;
+      }
+      // The server restarting means a new world; regenerate when the seed changes.
+      if (msg.world.seed !== world?.seed && !useSeed(msg.world.seed, msg.world)) return;
+      // Every welcome is a new server-side player: start from its state and input tick.
+      pred.reset(msg.you, msg.ack);
+      ghosts.clear();
+      camera.snap(...center(pred.cur), world.map);
+    });
+    net.onSnapshot.push((msg) => {
+      if (!pred) return;
+      const seq = pred.seq;
+      if (pred.reconcile(msg.ack, msg.you)) {
+        // Rare by design: identical code on both sides. Expected after a stall (background
+        // tab), when the server filled in no-input steps for us.
+        console.warn(`[net] corrected at ack ${msg.ack} (predicted up to ${seq})`);
+      }
+      ghosts.add(msg.tick, msg.g);
     });
   }
 
-  let tick = 0;
   let acc = 0;
   let last = performance.now();
   let fps = 0;
   let resetHeld = false;
+  let respawnQueued = false;
+  const outgoing = [];
 
   // Handles for poking at the client from the dev console.
-  globalThis.game = { renderer, net, tuning, get world() { return world; }, get player() { return cur; } };
+  globalThis.game = { renderer, net, tuning, ghosts, get world() { return world; }, get pred() { return pred; }, get player() { return pred?.cur; } };
 
   function frame(now) {
     const dt = Math.min((now - last) / 1000, MAX_FRAME_S);
@@ -158,27 +191,49 @@ async function boot() {
     }
     const map = world.map;
 
-    // R respawns (dev convenience until death/respawn lands in M5).
+    // R respawns (dev convenience until death/respawn lands in M5). It rides on the
+    // next tick's input, so the server respawns us at the same tick.
     const reset = input.isDown('KeyR');
-    if (reset && !resetHeld) respawn();
+    if (reset && !resetHeld) respawnQueued = true;
     resetHeld = reset;
 
-    // Fixed-step simulation
+    // Fixed-step simulation: predict each tick and send its input.
     acc += dt;
+    let firstSeq = 0;
     while (acc >= TICK_S) {
       acc -= TICK_S;
-      prev = cur;
-      cur = step(cur, input.sample(), map, tuning);
-      tick++;
+      const bits = input.sample() | (respawnQueued ? INPUT.RESPAWN : 0);
+      respawnQueued = false;
+      const seq = pred.advance(bits);
+      if (!firstSeq) firstSeq = seq;
+      outgoing.push(bits);
     }
+    if (outgoing.length) {
+      if (online) net.sendInput(firstSeq, outgoing);
+      outgoing.length = 0;
+    }
+    pred.decay(dt);
 
     // Render, interpolating between the last two ticks
+    const { prev, cur, err } = pred;
     const alpha = acc / TICK_S;
-    const pos = { x: prev.x + (cur.x - prev.x) * alpha, y: prev.y + (cur.y - prev.y) * alpha };
+    const pos = { x: prev.x + (cur.x - prev.x) * alpha + err.x, y: prev.y + (cur.y - prev.y) * alpha + err.y };
     camera.update(pos.x + tuning.width / 2, pos.y + tuning.height / 2, cur.vx, dt, map);
     const { cam } = camera;
 
     batch.clear();
+    const shown = online ? ghosts.sample(net.serverTick(now) - INTERP_TICKS) : [];
+    for (const g of shown) {
+      let a = ghostAnims.get(g.id);
+      if (!a) ghostAnims.set(g.id, (a = createAnimator()));
+      const name = ANIMS[g.anim] ?? 'idle';
+      const pose = { onGround: name === 'idle' || name === 'run', wallDir: g.facing, facing: g.facing };
+      drawPlayer(batch, g, pose, a.update(name, now / 1000), ghostColors, sprites.player, map);
+    }
+    if (ghostAnims.size > shown.length) {
+      const ids = new Set(shown.map((g) => g.id));
+      for (const id of ghostAnims.keys()) if (!ids.has(id)) ghostAnims.delete(id);
+    }
     const anim = animator.update(animFor(cur), now / 1000);
     drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, map, tuning);
     // Connection indicator, top-left of the view (there's no HUD text until M4)
@@ -189,7 +244,10 @@ async function boot() {
 
     if (panel.visible) {
       panel.show(
-        `fps ${fps.toFixed(0)}  tick ${tick}  net ${net.status}${net.rtt ? ` ${net.rtt.toFixed(0)}ms` : ''}\n` +
+        `fps ${fps.toFixed(0)}  net ${online ? net.status : 'offline (dev world)'}${net.rtt ? ` ${net.rtt.toFixed(0)}ms` : ''}` +
+        `  server tick ${net.serverTick(now).toFixed(0)}\n` +
+        `seq ${pred.seq}  ack ${pred.lastAck}  pending ${pred.pending.length}  mismatches ${pred.mismatches}` +
+        `  ghosts ${shown.length}/${net.names.size}${online && panelEdited() ? '\ntuning edits ignored online (server tuning). They apply with ?seed=N or ?map=test' : ''}\n` +
         `world ${world.label}\n` +
         `pos ${cur.x.toFixed(1)}, ${cur.y.toFixed(1)}  tile ${Math.floor((cur.x + tuning.width / 2) / TILE_SIZE)}, ${Math.floor((cur.y + tuning.height) / TILE_SIZE)}\n` +
         `vel ${cur.vx.toFixed(2)}, ${cur.vy.toFixed(2)}  anim ${anim.anim}\n` +

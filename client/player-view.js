@@ -1,13 +1,8 @@
 // How a player is drawn: animation state from physics state, and sprite or
-// flat-color fallback instances. Used for the local player now, and for ghosts in M3.
-import { TUNING, feetY } from '../shared/physics.js';
+// flat-color fallback instances. Used for the local player and for ghosts.
+import { TUNING, animFor, feetY } from '../shared/physics.js';
 
-/** Which animation fits this physics state. Names match SPRITE_SPEC.player (ART.md). */
-export function animFor(p) {
-  if (p.onGround) return Math.abs(p.vx) > 0.1 ? 'run' : 'idle';
-  if (p.wallDir !== 0 && p.vy > 0) return 'wallSlide';
-  return p.vy < 0 ? 'jump' : 'fall';
-}
+export { animFor };
 
 /** Tracks when the current animation started, so frames play from 0 on a change. */
 export function createAnimator() {
@@ -28,7 +23,7 @@ export function createAnimator() {
  * @param {{x: number, y: number}} pos interpolated hitbox top-left
  * @param {import('../shared/physics.js').PlayerState} p latest state (facing, wall, etc.)
  * @param {{anim: string, t: number}} anim
- * @param {{player: number[], outline: number[]}} colors
+ * @param {{player: number[], outline: number[], tint?: number[]}} colors tint multiplies the sprite
  * @param {import('./assets.js').LoadedSprite | undefined} sprite
  * @param {import('../shared/tiles.js').TileMap} map for putting feet on ramps
  */
@@ -48,7 +43,7 @@ export function drawPlayer(batch, pos, p, anim, colors, sprite, map, tuning = TU
     const [ax, ay] = sprite.anchor;
     // Mirror around the anchor when facing left.
     const x = facing < 0 ? footX - (fw - ax) : footX - ax;
-    batch.push(x, footY - ay, fw, fh, [1, 1, 1, 1], facing < 0 ? [u1, v0, u0, v1] : [u0, v0, u1, v1]);
+    batch.push(x, footY - ay, fw, fh, colors.tint ?? [1, 1, 1, 1], facing < 0 ? [u1, v0, u0, v1] : [u0, v0, u1, v1]);
     return;
   }
 

@@ -1,6 +1,8 @@
 // WebSocket connection lifecycle and message dispatch. See ARCHITECTURE.md § Netcode.
 import { WebSocketServer } from 'ws';
-import { MSG, PROTOCOL_VERSION, WS_PATH, decode, encode } from '../shared/protocol.js';
+import { CHUNK_TILES, MAX_INPUT_BATCH, MSG, PROTOCOL_VERSION, SNAPSHOT_EVERY, WS_PATH, decode, encode, packGhost } from '../shared/protocol.js';
+import { TUNING, tuningHash } from '../shared/physics.js';
+import { TILE_SIZE } from '../shared/tiles.js';
 import { TICK_RATE } from './game.js';
 
 const MAX_NAME_LEN = 16;
@@ -13,7 +15,18 @@ const MAX_FRAME_BYTES = 4096;
  */
 export function attachNet(httpServer, game) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
-  let nextPlayerId = 1;
+  /** Open sockets of players who have said hello. */
+  const sockets = new Map();
+  const TUNING_HASH = tuningHash(TUNING);
+
+  function broadcast(frame) {
+    for (const ws of sockets.values()) ws.send(frame);
+  }
+
+  game.onTick.push((tick) => {
+    if (tick % SNAPSHOT_EVERY !== 0 || sockets.size === 0) return;
+    for (const [id, frame] of snapshotFrames(game, tick, sockets)) sockets.get(id).send(frame);
+  });
 
   httpServer.on('upgrade', (req, socket, head) => {
     const { pathname } = new URL(req.url ?? '/', 'http://localhost');
@@ -25,8 +38,14 @@ export function attachNet(httpServer, game) {
   });
 
   wss.on('connection', (ws) => {
-    /** @type {{id: number, name: string} | null} */
+    /** @type {import('./game.js').Player | null} */
     let player = null;
+    ws.on('close', () => {
+      if (!player) return;
+      sockets.delete(player.id);
+      game.removePlayer(player.id);
+      broadcast(encode(MSG.LEFT, { id: player.id }));
+    });
 
     ws.on('message', (data, isBinary) => {
       if (isBinary) return;
@@ -41,26 +60,70 @@ export function attachNet(httpServer, game) {
             ws.close();
             return;
           }
-          player = { id: nextPlayerId++, name: cleanName(msg.name) };
+          player = game.addPlayer(cleanName(msg.name));
           ws.send(encode(MSG.WELCOME, {
             playerId: player.id,
             name: player.name,
             protocol: PROTOCOL_VERSION,
-            serverTick: game.tick,
+            serverTick: game.now(),
             tickRate: TICK_RATE,
-            // The client regenerates the world from this and checks the hash (WORLDGEN.md § Determinism).
+            // The client regenerates the world from this and checks both hashes (WORLDGEN.md § Determinism).
+            tuningHash: TUNING_HASH,
             world: { seed: game.world.seed, genVersion: game.world.version, hash: game.world.hash },
+            you: player.state,
+            ack: player.seq,
+            players: [...game.players.values()].filter((p) => p !== player).map((p) => [p.id, p.name]),
           }));
+          broadcast(encode(MSG.JOINED, { id: player.id, name: player.name }));
+          sockets.set(player.id, ws);
           break;
         }
         case MSG.PING:
-          if (typeof msg.c === 'number') ws.send(encode(MSG.PONG, { c: msg.c, s: game.tick }));
+          if (typeof msg.c === 'number') ws.send(encode(MSG.PONG, { c: msg.c, s: game.now() }));
+          break;
+        case MSG.INPUT:
+          // `tick` is for lag-compensated enemy checks (M5). Movement only needs seq.
+          if (!player || !Array.isArray(msg.bits) || msg.bits.length > MAX_INPUT_BATCH) return;
+          game.receiveInput(player, msg.seq, msg.bits);
           break;
       }
     });
   });
 
   return wss;
+}
+
+/**
+ * One snapshot frame per connected player: its own state and ack, plus ghosts
+ * in its 3×3 interest chunks.
+ * @param {ReturnType<import('./game.js').createGame>} game
+ * @param {{has(id: number): boolean}} connected
+ * @returns {[number, string][]} [playerId, frame]
+ */
+export function snapshotFrames(game, tick, connected) {
+  const players = [...game.players.values()];
+  const chunks = players.map((p) => chunkOf(p.state));
+  const out = [];
+  players.forEach((p, i) => {
+    if (!connected.has(p.id)) return;
+    const g = [];
+    players.forEach((o, j) => {
+      if (j !== i && near(chunks[i], chunks[j])) g.push(packGhost(o.id, o.state));
+    });
+    out.push([p.id, encode(MSG.SNAPSHOT, { tick, ack: p.seq, you: p.state, g })]);
+  });
+  return out;
+}
+
+/** Interest chunk of a player's centre. */
+export function chunkOf(p) {
+  const size = CHUNK_TILES * TILE_SIZE;
+  return [Math.floor((p.x + TUNING.width / 2) / size), Math.floor((p.y + TUNING.height / 2) / size)];
+}
+
+/** Whether two chunks are within one chunk of each other (the 3×3 interest set). */
+export function near(a, b) {
+  return Math.abs(a[0] - b[0]) <= 1 && Math.abs(a[1] - b[1]) <= 1;
 }
 
 /** Display names: trimmed printable text, capped length, never empty. */

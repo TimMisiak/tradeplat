@@ -6,6 +6,7 @@ import { startServer } from '../server/main.js';
 import { cleanName } from '../server/net.js';
 import { resolvePath } from '../server/static.js';
 import { MSG, PROTOCOL_VERSION, WS_PATH, decode, encode } from '../shared/protocol.js';
+import { INPUT, TUNING, stepInput, tuningHash } from '../shared/physics.js';
 
 let server;
 let base;
@@ -70,8 +71,15 @@ function openWs() {
     if (w) w(msg); else queue.push(msg);
   });
   const next = () => (queue.length ? Promise.resolve(queue.shift()) : new Promise((r) => waiters.push(r)));
+  /** Next message of type t (skipping others), optionally also matching `pred`. */
+  const nextOf = async (t, pred = () => true) => {
+    for (;;) {
+      const msg = await next();
+      if (msg.t === t && pred(msg)) return msg;
+    }
+  };
   return new Promise((resolve, reject) => {
-    ws.once('open', () => resolve({ ws, next }));
+    ws.once('open', () => resolve({ ws, next, nextOf }));
     ws.once('error', reject);
   });
 }
@@ -91,6 +99,53 @@ test('hello → welcome, ping → pong', async () => {
   assert.equal(pong.c, 1234.5);
   assert.ok(pong.s >= welcome.serverTick);
   ws.close();
+});
+
+test('welcome carries the tuning hash and the starting player state', async () => {
+  const { ws, next } = await openWs();
+  ws.send(encode(MSG.HELLO, { name: 'Bo', protocol: PROTOCOL_VERSION }));
+  const welcome = await next();
+  assert.equal(welcome.tuningHash, tuningHash(TUNING));
+  assert.deepEqual(welcome.you, server.game.spawn);
+  assert.equal(welcome.ack, 0);
+  ws.close();
+});
+
+test('inputs are acknowledged with the state a local replay predicts', async () => {
+  const { ws, nextOf } = await openWs();
+  ws.send(encode(MSG.HELLO, { name: 'Cy', protocol: PROTOCOL_VERSION }));
+  const { you } = await nextOf(MSG.WELCOME);
+  const bits = [...Array(8).fill(INPUT.RIGHT), ...Array(4).fill(INPUT.RIGHT | INPUT.JUMP)];
+  ws.send(encode(MSG.INPUT, { seq: 1, tick: 0, bits: bits.slice(0, 6) }));
+  ws.send(encode(MSG.INPUT, { seq: 7, tick: 0, bits: bits.slice(6) }));
+  const snap = await nextOf(MSG.SNAPSHOT, (m) => m.ack === bits.length);
+  let s = you;
+  for (const b of bits) s = stepInput(s, b, server.game.world, server.game.spawn);
+  assert.deepEqual(snap.you, s);
+  ws.close();
+});
+
+test('two players see each other as ghosts, with join and leave events', async () => {
+  const a = await openWs();
+  a.ws.send(encode(MSG.HELLO, { name: 'Ann', protocol: PROTOCOL_VERSION }));
+  const wa = await a.nextOf(MSG.WELCOME);
+  const b = await openWs();
+  b.ws.send(encode(MSG.HELLO, { name: 'Ben', protocol: PROTOCOL_VERSION }));
+  const wb = await b.nextOf(MSG.WELCOME);
+  assert.ok(wb.players.some(([id, name]) => id === wa.playerId && name === 'Ann'));
+  const joined = await a.nextOf(MSG.JOINED);
+  assert.deepEqual([joined.id, joined.name], [wb.playerId, 'Ben']);
+
+  // Both spawn at the same post, so each is in the other's interest set.
+  const snap = await a.nextOf(MSG.SNAPSHOT, (m) => m.g.length > 0);
+  const ghost = snap.g.find((g) => g[0] === wb.playerId);
+  assert.ok(ghost, 'b is a ghost for a');
+  assert.ok(!snap.g.some((g) => g[0] === wa.playerId), 'not our own ghost');
+
+  b.ws.close();
+  const left = await a.nextOf(MSG.LEFT);
+  assert.equal(left.id, wb.playerId);
+  a.ws.close();
 });
 
 test('protocol mismatch gets an error and a close', async () => {
