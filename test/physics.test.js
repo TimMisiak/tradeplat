@@ -64,14 +64,14 @@ test('step does not mutate its input state', () => {
   assert.deepEqual(p, copy);
 });
 
-test('run reaches top speed in ~6 ticks and stops in ~4', () => {
+test('run reaches top speed in ~10 ticks and stops in ~7', () => {
   let p = settle(spawn(FLAT), FLAT);
-  const accel = run(p, FLAT, 12, RIGHT);
+  const accel = run(p, FLAT, 16, RIGHT);
   const reached = accel.findIndex((s) => s.vx === T.runSpeed) + 1;
-  assert.ok(reached >= 4 && reached <= 7, `ticks to top speed: ${reached}`);
-  const stop = run(lastOf(accel), FLAT, 10, 0);
+  assert.ok(reached >= 8 && reached <= 11, `ticks to top speed: ${reached}`);
+  const stop = run(lastOf(accel), FLAT, 14, 0);
   const stopped = stop.findIndex((s) => s.vx === 0) + 1;
-  assert.ok(stopped >= 3 && stopped <= 5, `ticks to stop: ${stopped}`);
+  assert.ok(stopped >= 5 && stopped <= 8, `ticks to stop: ${stopped}`);
 });
 
 test('full jump reaches ~jumpVel²/2g; tapping gives a lower hop', () => {

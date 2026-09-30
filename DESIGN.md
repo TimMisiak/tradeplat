@@ -26,8 +26,8 @@ The target is Super Meat Boy: fast, precise and forgiving where it matters.
 
 | Mechanic | Intent | Starting value (60 Hz frames) |
 |---|---|---|
-| Run acceleration | Reach top speed almost instantly | ~6 frames to top speed |
-| Ground friction | Stop almost instantly when you let go | ~4 frames to stop |
+| Run acceleration | Reach a high top speed (5 px/tick, ~19 tiles/s) quickly, with a short visible ramp | ~10 frames to top speed |
+| Ground friction | Stop quickly when you let go, with a slight slide | ~7 frames to stop |
 | Air control | Strong: you can steer mid-jump | ~70% of ground acceleration |
 | Variable jump | Releasing jump early cuts upward velocity | cut to ~40% on release |
 | Coyote time | You can still jump just after leaving a ledge | 6 frames |

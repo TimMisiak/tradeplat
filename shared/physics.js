@@ -31,9 +31,9 @@ export const TUNING = Object.freeze({
   height: 18,
 
   // running
-  runSpeed: 3.2, // top speed, px/tick (~12 tiles/s)
-  groundAccel: 0.55, // ~6 ticks from standstill to top speed
-  groundDecel: 0.8, // ~4 ticks from top speed to a stop
+  runSpeed: 5, // top speed, px/tick (~19 tiles/s)
+  groundAccel: 0.55, // ~10 ticks from standstill to top speed
+  groundDecel: 0.8, // ~7 ticks from top speed to a stop
   groundTurn: 1.2, // accel when reversing, snappier than starting
   airAccel: 0.4, // ~70% of ground accel: strong air control
   airDecel: 0.12, // no input in the air: momentum mostly kept
