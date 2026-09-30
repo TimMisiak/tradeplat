@@ -36,12 +36,17 @@ Rules:
 
 Colors are defined in `manifest.json` → `palette`. The game uses them **now** for the flat-color fallback, so art and fallback look consistent. The palette may be adjusted, and changing it here recolors the fallback everywhere.
 
+Solid-ground art also uses a dedicated shadow shade, `#2c3446`, defined in its
+source generator. This art-only color separates shadowed rock from the sky
+without adding a runtime palette key or changing other assets. Spike art uses
+`#323947`, a slate gray slightly darker than solid terrain, instead of hazard red.
+
 | Key | Used for |
 |---|---|
 | `sky` | background behind the level |
 | `terrain`, `terrainEdge` | solid ground fill and its exposed edges |
 | `oneWay` | one-way platforms |
-| `hazard` | spikes, saws: anything that kills on touch |
+| `hazard` | hazard fallback and saws; spike art uses the gray shade above |
 | `enemy` | patrollers, flyers |
 | `player` | the local player |
 | `ghost` | other players (also drawn at reduced alpha) |
@@ -138,13 +143,94 @@ These are 16×16 icons for the trade menu, one per good in `shared/goods.js`: `w
 
 ## Status
 
+Asset progress below reflects the exported files in `client/assets/manifest.json`.
+Art completion is separate from renderer/gameplay implementation.
+
 | Area | State |
 |---|---|
-| Palette | placeholder values in the manifest (the flat-color fallback uses them) |
-| Tiles | none yet |
-| Sprites | none yet |
-| Goods icons | none yet |
+| Palette | Initial manifest palette in use by the player art and flat-color fallback; broader art direction still open |
+| Player — required animations | **Done and reviewed:** `idle`, `run`, `jump`, `fall`, `wallSlide`; exported and registered in the manifest |
+| Player — optional animations | Not started: `land`, `death` |
+| Solid ground | **Done and visually approved:** `solid`, all 16 cardinal4 frames exported and registered |
+| One-way platforms | **Done and visually approved:** `oneWay`; exported and registered |
+| Spikes | **Done and visually approved:** gray `spike` teeth without a base plate; exported and registered |
+| Trade post tiles | **Done and visually approved:** `postFloor`, `postWall`; all 16 cardinal4 frames exported and registered for each |
+| Enemies and hazards | Not started: patroller `walk`, flyer `fly`, saw `spin`; optional patroller `stomped` also outstanding |
+| Effects | Not started: dust `puff`, splat `burst` and `stain` |
+| Post sign | **Done and visually approved:** postSign `idle`; neutral grayscale, exported and registered |
+| Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
 | Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. Enemies and fx come in M5, icons in M4 |
+
+### Solid ground — first style pass
+
+Muted slate rock uses the existing `terrain` and `terrainEdge` colors plus the
+art-only shadow shade `#2c3446`, which remains distinct from the sky.
+Exposed top edges have a light chipped rim; left faces catch light and right/bottom
+faces are shadowed. Interiors remain plain so connected tiles do not form a grid.
+The repeating interior crack has been removed; crack detail is deferred until
+tile variants can avoid obvious repetition.
+
+The native 16×16 frames are exported as a 256×16 cardinal4 strip in
+[client/assets/tiles/solid.png](client/assets/tiles/solid.png). The full strip passes
+asset validation and is visually approved. Source and regeneration instructions
+are in [art/tiles/](art/tiles/README.md), alongside previews of all masks, an irregular
+autotiled blob, and a mock level composition with the approved courier.
+
+### Completed spikes and one-way platforms
+
+Spikes have two upward-facing slate-gray teeth, slightly darker than solid ground,
+with a dark outline and a muted top-left highlight. The teeth meet the ground
+directly without a base plate. The single 16×16 tile supports all four rotations.
+One-way platforms use a continuous brown ledge in the top four pixel rows;
+the remaining twelve rows are transparent. Both use hard alpha, drawn directly at
+native resolution; spikes add the art-only gray shade documented above.
+
+Runtime files are `client/assets/tiles/spike.png` and `client/assets/tiles/oneway.png`.
+The editable generator and a review showing rotations, repeated tiles, and a mock
+level are in [art/tiles/](art/tiles/README.md). One-way platforms and gray spikes
+without a base plate are visually approved.
+
+### Completed trade-post art
+
+The floor and wall strips use warm timber from the existing palette. Floors have
+a clear light top rim; walls and roofs are darker, with small iron pins at exposed
+corners. Detail stays on exposed edges so filled interiors join without a grid.
+Both strips contain all sixteen native 16×16 cardinal4 frames.
+
+The 32×16 sign hangs from two short supports and shows opposing exchange arrows.
+It uses neutral gray and white for post-color tinting, hard alpha, the (16,16)
+anchor, and one static `idle` frame. Neutral sign shades are art-only colors.
+
+Runtime files are `tiles/postfloor.png`, `tiles/postwall.png`, and
+`sprites/postsign/idle.png` under `client/assets/`. Editable sources and a preview
+of structures, all masks, joins, and sign tints are in [art/posts/](art/posts/README.md).
+All three assets are visually approved.
+
+### Completed player art
+
+The approved design is a simple, cartoony courier with an ivory hood, blue scarf,
+and brown backpack. Run, jump, and fall use short, slim, undetailed arms. Fall and
+wall-slide animate a subtle one-pixel backpack shift instead of a trailing blue
+scarf behind the player.
+
+All frames are native 24×24 pixels, face right, and use the (12,24) foot anchor,
+manifest palette, and hard transparency.
+
+| Animation | Frames | FPS | Loop |
+|---|---|---|---|
+| `idle` | 4 | 6 | yes |
+| `run` | 6 | 12 | yes |
+| `jump` | 2 | 10 | no |
+| `fall` | 2 | 8 | yes |
+| `wallSlide` | 2 | 8 | yes |
+
+Runtime sheets are in [client/assets/sprites/player/](client/assets/sprites/player/).
+Editable Python/Pillow sources and enlarged/animated review previews are in
+[art/player/](art/player/); see its [README](art/player/README.md) for regeneration.
+The completed set passes `npm run test:assets` without missing-animation warnings.
+
+Update this status section as each asset set is completed. Unspecified art work
+such as backdrops and player color variants remains under Open questions below.
 
 ## Open questions
 

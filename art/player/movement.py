@@ -36,10 +36,16 @@ BODY = [
 ]
 
 
-def body(im, x, y, scarf=0):
+def body(im, x, y, scarf=0, bag_shift=None):
     # Loose scarf trails left, away from forward travel.
-    stamp(im, ['oooo', 'obbo', ' ooo'], x - 1, y + scarf)
-    stamp(im, BODY, x, y)
+    if scarf is not None:
+        stamp(im, ['oooo', 'obbo', ' ooo'], x - 1, y + scarf)
+    if bag_shift is None:
+        stamp(im, BODY, x, y)
+    else:
+        # The bag occupies the first five columns; move it independently.
+        stamp(im, [row[:5] for row in BODY], x, y + bag_shift)
+        stamp(im, ['     ' + row[5:] for row in BODY], x, y)
     stamp(im, HEAD, x, y - 8)
 
 
@@ -83,7 +89,7 @@ def fall_frame(i):
     im = Image.new('RGBA', (24, 24))
     limb(im, [(10, 18), (9, 20), (8, 22)], 'd', True)
     limb(im, [(13, 18), (15, 20), (16, 21)], 's', True)
-    body(im, 4, 12, -2 - i)
+    body(im, 4, 12, scarf=None, bag_shift=-i)
     limb(im, [(13, 14), (15, 15 - i), (16, 14 - i)], 'w', width=1)
     return im
 
@@ -92,7 +98,7 @@ def wall_frame(i):
     im = Image.new('RGBA', (24, 24))
     limb(im, [(11, 18), (10, 20), (9, 22)], 'd', True)
     limb(im, [(14, 18), (18, 18), (18, 20)], 's', True)
-    body(im, 5, 12, -2 - i)
+    body(im, 5, 12, scarf=None, bag_shift=-i)
     limb(im, [(14, 14), (17, 15), (18, 12)], 'w')
     # Palm and forward boot share a contact line; wall is on the right.
     ImageDraw.Draw(im).rectangle((19, 10, 20, 13), fill=color('o'))

@@ -20,8 +20,21 @@
       "#a3b86c", "#f4a261", "#9aa5ff", "#e07a5f", "#b5e48c", "#d4a5a5"
     ]
   },
-  "tiles": {},
+  "tiles": {
+    "solid": { "file": "tiles/solid.png", "autotile": "cardinal4" },
+    "spike": { "file": "tiles/spike.png" },
+    "oneWay": { "file": "tiles/oneway.png" },
+    "postFloor": { "file": "tiles/postfloor.png", "autotile": "cardinal4" },
+    "postWall": { "file": "tiles/postwall.png", "autotile": "cardinal4" }
+  },
   "sprites": {
+    "postSign": {
+      "frame": [32, 16],
+      "anchor": [16, 16],
+      "anims": {
+        "idle": { "file": "sprites/postsign/idle.png", "frames": 1, "fps": 1, "loop": true }
+      }
+    },
     "player": {
       "frame": [24, 24],
       "anchor": [12, 24],
