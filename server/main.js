@@ -7,10 +7,10 @@ import { serveStatic } from './static.js';
 
 /**
  * Start a server. `port: 0` picks a free port (used by tests).
- * @param {{port?: number, host?: string}} [opts]
+ * @param {{port?: number, host?: string, seed?: number}} [opts] seed: world seed (random if omitted)
  */
-export async function startServer({ port = 3000, host } = {}) {
-  const game = createGame();
+export async function startServer({ port = 3000, host, seed } = {}) {
+  const game = createGame({ seed });
   const http = createServer(serveStatic);
   const wss = attachNet(http, game);
 
@@ -34,7 +34,11 @@ export async function startServer({ port = 3000, host } = {}) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const server = await startServer({ port: Number(process.env.PORT) || 3000 });
+  const seed = process.env.SEED !== undefined && process.env.SEED !== '' ? Number(process.env.SEED) >>> 0 : undefined;
+  const server = await startServer({ port: Number(process.env.PORT) || 3000, seed });
+  const { world, genMs } = server.game;
+  console.log(`world: seed ${world.seed} (genVersion ${world.version}, attempt ${world.attempt}), ` +
+    `${world.posts.length} posts, hash ${world.hash}, generated in ${genMs.toFixed(0)} ms`);
   console.log(`platform-trader listening on http://localhost:${server.port}`);
   const shutdown = () => server.close().then(() => process.exit(0));
   process.on('SIGINT', shutdown);

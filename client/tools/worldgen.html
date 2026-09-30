@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Worldgen preview: Platform Trader</title>
+  <link rel="icon" href="data:,">
+  <!-- Dev tool, not the game, so plain DOM + Canvas2D is fine. See WORLDGEN.md § Tooling. -->
+  <style>
+    body { margin: 0; padding: 12px 16px; background: #0d0f15; color: #e8e6df; font: 13px/1.4 ui-monospace, monospace; }
+    h1 { font-size: 16px; margin: 0 0 8px; }
+    .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+    input[type=number] { width: 110px; background: #1b2030; color: inherit; border: 1px solid #2a3040; font: inherit; padding: 2px 4px; }
+    button, select { font: inherit; }
+    #stats { color: #8a93a6; margin-bottom: 8px; white-space: pre-wrap; }
+    #wrap { overflow: auto; border: 1px solid #252a36; max-height: calc(100vh - 150px); }
+    canvas { image-rendering: pixelated; display: block; }
+    a { color: #5fb3d9; }
+    .legend span { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 10px; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h1>Worldgen preview</h1>
+  <div class="bar">
+    <button id="prev">◀</button>
+    <label>seed <input id="seed" type="number" min="0" max="4294967295"></label>
+    <button id="next">▶</button>
+    <button id="rand">random</button>
+    <label>zoom <select id="zoom"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+    <label><input id="showFill" type="checkbox" checked> reachable</label>
+    <label><input id="showRoutes" type="checkbox" checked> routes</label>
+    <a id="play" href="/">play this seed</a>
+  </div>
+  <div class="legend">
+    <span style="background:#3b4252"></span>solid <span style="background:#7a6a55"></span>one-way
+    <span style="background:#6b5a45"></span>post <span style="background:#e63946"></span>hazard
+    <span style="background:#22324a"></span>reachable air <span style="background:#5fb3d9"></span>route
+    <span style="background:#f2c14e"></span>spawn post
+  </div>
+  <div id="stats"></div>
+  <div id="wrap"><canvas id="map"></canvas></div>
+
+  <script type="module">
+    import { generateWorld, floodFill, GEN_VERSION } from '../../shared/worldgen.js';
+    import { TILE } from '../../shared/tiles.js';
+
+    const $ = (id) => document.getElementById(id);
+    const COLORS = {
+      [TILE.empty]: [20, 26, 43], [TILE.solid]: [59, 66, 82], [TILE.spike]: [230, 57, 70],
+      [TILE.oneWay]: [122, 106, 85], [TILE.postFloor]: [107, 90, 69], [TILE.postWall]: [78, 64, 51],
+    };
+    const REACHABLE = [34, 50, 74];
+
+    const params = new URLSearchParams(location.search);
+    $('seed').value = params.get('seed') ?? '1';
+
+    function draw() {
+      const seed = Number($('seed').value) >>> 0;
+      history.replaceState(null, '', `?seed=${seed}`);
+      $('play').href = `/?seed=${seed}`;
+      let world;
+      const t0 = performance.now();
+      try {
+        world = generateWorld(seed);
+      } catch (err) {
+        $('stats').textContent = String(err);
+        return;
+      }
+      const ms = performance.now() - t0;
+      const { visited } = floodFill(world, world.posts[world.spawnPost].spawn);
+
+      const c = $('map');
+      c.width = world.w;
+      c.height = world.h;
+      const z = Number($('zoom').value);
+      c.style.width = `${world.w * z}px`;
+      c.style.height = `${world.h * z}px`;
+      const ctx = c.getContext('2d');
+      const img = ctx.createImageData(world.w, world.h);
+      const fill = $('showFill').checked;
+      for (let i = 0; i < world.tiles.length; i++) {
+        const id = world.tiles[i];
+        const col = id === TILE.empty && fill && visited[i] ? REACHABLE : COLORS[id] ?? [255, 0, 255];
+        img.data.set(col, i * 4);
+        img.data[i * 4 + 3] = 255;
+      }
+      ctx.putImageData(img, 0, 0);
+
+      if ($('showRoutes').checked) {
+        ctx.fillStyle = '#5fb3d9';
+        for (const path of world.debug.routes) for (const [x, y] of path) ctx.fillRect(x, y, 1, 1);
+      }
+      ctx.font = '8px ui-monospace, monospace';
+      for (const p of world.posts) {
+        ctx.strokeStyle = p.id === world.spawnPost ? '#f2c14e' : '#e8e6df';
+        ctx.strokeRect(p.x - 0.5, p.y - 0.5, p.w + 1, p.h + 1);
+        ctx.fillStyle = ctx.strokeStyle;
+        ctx.fillText(`${p.name} (${p.kind})`, p.x, p.y - 3);
+      }
+
+      $('stats').textContent =
+        `genVersion ${GEN_VERSION}  seed ${world.seed}  attempt ${world.attempt}  hash ${world.hash}  ${ms.toFixed(0)} ms\n` +
+        `${world.posts.length} posts  spawn: ${world.posts[world.spawnPost].name}  routes ${world.debug.edges.length}  ` +
+        `platforms ${world.stats.platforms}  repair tunnels ${world.stats.tunnels}  reachable tiles ${world.stats.reachable}`;
+    }
+
+    $('prev').onclick = () => { $('seed').value = Math.max(0, Number($('seed').value) - 1); draw(); };
+    $('next').onclick = () => { $('seed').value = Number($('seed').value) + 1; draw(); };
+    $('rand').onclick = () => { $('seed').value = crypto.getRandomValues(new Uint32Array(1))[0]; draw(); };
+    for (const id of ['seed', 'zoom', 'showFill', 'showRoutes']) $(id).onchange = draw;
+    draw();
+  </script>
+</body>
+</html>

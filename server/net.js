@@ -48,6 +48,8 @@ export function attachNet(httpServer, game) {
             protocol: PROTOCOL_VERSION,
             serverTick: game.tick,
             tickRate: TICK_RATE,
+            // The client regenerates the world from this and checks the hash (WORLDGEN.md § Determinism).
+            world: { seed: game.world.seed, genVersion: game.world.version, hash: game.world.hash },
           }));
           break;
         }

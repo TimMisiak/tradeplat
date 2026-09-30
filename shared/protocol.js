@@ -14,7 +14,7 @@ export const MSG = Object.freeze({
   HELLO: 'hello', // {name, protocol}
   PING: 'ping', // {c: clientTimeMs}
   // server → client
-  WELCOME: 'welcome', // {playerId, protocol, serverTick, tickRate}
+  WELCOME: 'welcome', // {playerId, name, protocol, serverTick, tickRate, world: {seed, genVersion, hash}}
   PONG: 'pong', // {c: echoed clientTimeMs, s: serverTick}
   ERROR: 'error', // {reason}
 });

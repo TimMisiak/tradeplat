@@ -251,3 +251,57 @@ export async function loadSpriteAtlas(device, manifest, base = new URL('./assets
   console.info(`[assets] sprite atlas ${ATLAS_W}×${atlasH}: ${Object.keys(sprites).join(', ')}`);
   return { texture, sprites };
 }
+
+/**
+ * Load tile art into a 16×16 texture array: one layer per frame (16 for a
+ * cardinal4 strip). Tiles without art are left out, so they keep their flat
+ * palette style.
+ * @param {GPUDevice} device
+ * @returns {Promise<{texture: GPUTexture | null, art: Record<string, {layer: number, autotile: boolean}>}>}
+ */
+export async function loadTileArt(device, manifest, base = new URL('./assets/', import.meta.url)) {
+  const entries = [];
+  for (const [name, t] of Object.entries(manifest?.tiles ?? {})) {
+    if (!TILE_SPEC[name] || typeof t?.file !== 'string') continue;
+    const frames = t.autotile ? AUTOTILE[t.autotile]?.frames : 1;
+    if (!frames) continue;
+    try {
+      const res = await fetch(new URL(t.file, base));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bitmap = await createImageBitmap(await res.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+      if (bitmap.width !== TILE_PX * frames || bitmap.height !== TILE_PX) {
+        console.warn(`[assets] tile ${name}: ${bitmap.width}×${bitmap.height}, expected ${TILE_PX * frames}×${TILE_PX}. Using the flat style`);
+        bitmap.close();
+        continue;
+      }
+      entries.push({ name, bitmap, frames, autotile: !!t.autotile });
+    } catch (err) {
+      console.warn(`[assets] tile ${name}: ${err.message}. Using the flat style`);
+    }
+  }
+  if (entries.length === 0) return { texture: null, art: {} };
+
+  const layers = entries.reduce((n, e) => n + e.frames, 0);
+  const texture = device.createTexture({
+    label: 'tile art',
+    size: [TILE_PX, TILE_PX, layers],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  const art = {};
+  let layer = 0;
+  for (const e of entries) {
+    art[e.name] = { layer, autotile: e.autotile };
+    for (let f = 0; f < e.frames; f++) {
+      device.queue.copyExternalImageToTexture(
+        { source: e.bitmap, origin: [f * TILE_PX, 0] },
+        { texture, origin: [0, 0, layer + f] },
+        [TILE_PX, TILE_PX],
+      );
+    }
+    layer += e.frames;
+    e.bitmap.close();
+  }
+  console.info(`[assets] tile art: ${Object.keys(art).join(', ')} (${layers} layers)`);
+  return { texture, art };
+}

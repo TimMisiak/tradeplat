@@ -3,6 +3,8 @@ services:
     build: .
     environment:
       PORT: "3000"
+      # World seed. Empty means a new random world on every start (WORLDGEN.md).
+      SEED: "${SEED:-}"
     ports:
       # The host port is assigned by the environment. Don't hard-code it.
       - "${HOST_PORT}:3000"

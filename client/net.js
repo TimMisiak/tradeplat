@@ -19,6 +19,10 @@ export function createNet({ name }) {
     rtt: 0,
     /** Set when the server rejects us for good (e.g. a protocol mismatch). Stops reconnecting. */
     fatal: '',
+    /** From the last welcome: {seed, genVersion, hash}. */
+    world: null,
+    /** Called with each welcome message (including after a reconnect). */
+    onWelcome: [],
   };
 
   let ws = null;
@@ -39,7 +43,9 @@ export function createNet({ name }) {
           net.status = 'connected';
           net.playerId = msg.playerId;
           net.serverTick = msg.serverTick;
-          console.info(`[net] welcome: player ${msg.playerId} "${msg.name}", tick ${msg.serverTick} @ ${msg.tickRate} Hz`);
+          net.world = msg.world;
+          console.info(`[net] welcome: player ${msg.playerId} "${msg.name}", tick ${msg.serverTick} @ ${msg.tickRate} Hz, world seed ${msg.world?.seed}`);
+          for (const fn of net.onWelcome) fn(msg);
           ping();
           pingTimer = setInterval(ping, PING_INTERVAL_MS);
           break;

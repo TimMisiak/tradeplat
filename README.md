@@ -6,7 +6,7 @@ A web-based multiplayer game that combines **tight, Super Meat Boy-style platfor
 
 ```sh
 npm install
-npm start          # serves the game on http://localhost:3000 (PORT env overrides)
+npm start          # serves the game on http://localhost:3000 (PORT env overrides; SEED=N fixes the world)
 npm test           # node --test
 npm run test:assets  # just the asset manifest check (see ART.md)
 ```
@@ -33,7 +33,7 @@ Each decision is written down in one doc, and the others link to it. Every doc e
 |---|---|---|---|
 | M0 | Repo skeleton, static server, WebGPU clear-screen, `node --test` running | ARCHITECTURE, ART | **done** 2026-09-30 |
 | M1 | Shared physics plus a local single-player on a hand-written test map, with the movement feel tuned | DESIGN, ARCHITECTURE | **built** 2026-09-30. Feel tuning is ongoing with the \` panel |
-| M2 | World generation with the flood-fill reachability check, the tile-texture renderer, and the scrolling camera | WORLDGEN | not started |
+| M2 | World generation with the flood-fill reachability check, the tile-texture renderer, and the scrolling camera | WORLDGEN | **done** 2026-09-30 |
 | M3 | Server-authoritative netcode: prediction, reconciliation, and interpolated ghosts | ARCHITECTURE | not started |
 | M4 | Trade posts, v1 random-walk market, hold capacity, in-canvas trade UI | ECONOMY, DESIGN | not started |
 | M5 | Hazards and enemies, death, cargo loss, respawn | DESIGN | not started |

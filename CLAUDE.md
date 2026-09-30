@@ -25,7 +25,8 @@ Every design decision lives in exactly one doc, and other docs link to it rather
   - no `Math.sin/cos/exp/pow` (use `shared/mathdet.js`);
   - no DOM, Node APIs, or wall-clock time.
 - **`step()` in `shared/physics.js` stays pure.** Rollback and PvP later depend on it.
-- **Worldgen output changes → bump `genVersion`** and update the golden hash test.
+- **Worldgen output changes → bump `GEN_VERSION`** and update the golden hash in `test/worldgen.test.js`. Worldgen reads `ENVELOPE`, never `TUNING`.
+- **Stopping dev servers:** Node renames its process to `MainThread`, so `pgrep -x node` misses it. Match on the command line instead (`ps -eo pid,args`).
 - **The server is authoritative** for money, cargo, deaths and prices. The client only predicts its own movement.
 - **State is plain JSON-able data with a `version` field,** with no game state hidden in classes or closures, so persistence can be added later.
 - **HTTPS always works.** The game is tested over https behind a TLS proxy (WebGPU needs a secure context). Build every URL from `location`: `wss:` when the page is `https:`, and no hard-coded `http://`, `ws://`, host or port. Anything added later (asset URLs, APIs) must work under both schemes.
@@ -37,7 +38,7 @@ Every design decision lives in exactly one doc, and other docs link to it rather
 ## Commands
 
 ```sh
-npm start        # http + ws server (PORT env, default 3000)
+npm start        # http + ws server (PORT env, default 3000; SEED=N for a fixed world)
 npm test         # node --test
 npm run test:assets  # manifest ↔ files check only
 npm run bench    # bench/*.bench.js

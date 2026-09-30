@@ -32,20 +32,25 @@ This doc covers how a seed becomes a playable map. Game rules are in [DESIGN.md]
 Stages run in order, and each takes the map plus its own RNG sub-stream.
 
 1. **Terrain.**
-   - A surface height profile comes from layered 1D value noise, with rolling hills and a few cliffs.
-   - Below the surface, 2D value noise with a threshold makes caves, then 2–3 cellular-automaton smoothing passes (integer neighbour counts) remove single-tile noise.
+   - A surface height profile comes from layered 1D value noise (rolling hills).
+   - **The surface is terraced:** the height only changes once the noise has drifted `ENVELOPE.stepUp` (3) rows, and then by exactly that much. A smooth slope would otherwise become a staircase of 1-tile steps, and since the player can't walk up a step, every tile would need its own jump.
+   - Below the surface, 2D value noise with a threshold makes caves, which get more open with depth. Two cellular-automaton smoothing passes (integer neighbour counts) remove single-tile noise.
    - Above the surface, floating islands come from a sparse, high-threshold noise layer.
+   - After smoothing, the terraced surface is laid back on top: a 5-row solid crust, and 14 rows of clear air above it. Otherwise the smoothing would round the terraces off again.
 2. **Trade posts.**
-   - 8–12 posts are placed by rejection sampling, with a **minimum spacing** of about 96 tiles horizontally.
-   - They are spread across heights: surface, cave, and sky island.
-   - One post near the horizontal middle is chosen as the **spawn post**.
+   - 8–12 posts. The width is split into equal slots, with one post per slot jittered by up to ±20% of the slot, so posts are always about 78–118 tiles apart.
+   - Each post is surface, cave or sky (weights 2 : 2 : 1). Sky posts fall back to surface when there's no room above the ground. The middle post is always a surface post and is the **spawn post**.
+   - Each post gets a generated name (`Rust`+`mouth` style, unique within the world) and a `colorIndex` into the palette's `posts[]`.
 3. **Stamp posts.**
-   - Each post is a small prefab: a hollow room of about 14 × 7 tiles with `postFloor`/`postWall` tiles, open doorways on both sides, and a landing platform outside each door.
-   - The area around each post is cleared and flagged `NO_SPAWN`.
+   - Each post is a 14 × 7 prefab: a `postWall` roof, 3-row walls, and 3-row open doorways on both sides. Its `postFloor` floor runs 3 tiles past each door as a landing platform.
+   - 3 tiles of air are cleared around the room. Surface posts get a solid foundation down to the ground.
+   - Each post records its trade `zone` (the interior), a `noSpawn` rect (6-tile margin, used by stage 5), its `doors`, and a `spawn` tile.
 4. **Routes.**
    - Posts are connected along a minimum spanning tree over their positions, plus one or two extra edges so there are loops and more than one route to choose from.
-   - For each edge, a meandering corridor (a noisy walk with ≥ 3 tiles of headroom) is carved between the two doorways.
-   - Platforms are scattered along it, spaced within the **jump envelope** worked out from the physics `TUNING` table: maximum jump height ≈ v²/2g, and maximum horizontal gap from the flight time × run speed, with a safety margin.
+   - For each edge, a corridor is carved from one post's facing door to the other's. It follows a noisy curve between the two, and the brush is 2 tiles wide with 3 rows of headroom above the feet.
+   - Height changes along the path are **bunched into vertical runs of at least 3 rows**, the same reasoning as the terraced surface: ledges, not 1-tile staircases.
+   - Then one-way platforms (up to 4 wide) are added wherever the path goes further than the **`ENVELOPE`** allows without support: `gap` = 4 tiles across, or `stepUp` = 3 rows up. Stacked one-ways in a vertical shaft make a ladder you jump up through.
+   - `ENVELOPE` lives in `worldgen.js` and deliberately does **not** read `TUNING`, so tweaking the movement feel doesn't change any maps. Instead, `test/worldgen.test.js` checks that the current physics can still climb a `stepUp` ledge and clear a `gap` jump.
    - This makes routes *likely* jumpable even though the v1 check doesn't prove it.
 5. **Hazards and spawners.**
    - Spikes go on pit floors and the undersides of some ledges.
@@ -55,7 +60,14 @@ Stages run in order, and each takes the map plus its own RNG sub-stream.
    - Spawners are recorded as data: `{id, kind, x, y, params}`. [`shared/enemies.js`](ARCHITECTURE.md#enemies) turns them into motion.
 6. **Reachability check and repair** (below).
 
-The output is a plain object: `{version, seed, w, h, tiles, posts[], spawnPost, spawners[], hash}`.
+The output is a plain object: `{version, seed, attempt, w, h, tiles, posts[], spawnPost, spawners[], hash, stats, debug}`. `stats` holds the number of platforms and repair tunnels and the reachable tile count. `debug.routes` holds the carved paths, used by the preview tool. Neither is part of the hash.
+
+### Where the seed comes from
+
+- The server picks a random 32-bit seed at startup, or uses the `SEED` environment variable if it's set, and logs the seed, hash and generation time.
+- `welcome` carries `world: {seed, genVersion, hash}`. The client regenerates the world and compares the result. If they differ, it shows "This page is out of date with the server" and doesn't play.
+- When the client reconnects to a server with a new seed (after a server restart), it regenerates and respawns.
+- Dev overrides: `/?seed=N` generates locally without checking against the server, and `/?map=test` loads the M1 test level.
 
 ## Reachability v1
 
@@ -64,7 +76,7 @@ The v1 check is a **flood fill over non-solid tiles**, deliberately simple.
 - Start from the spawn post's zone and flood fill with 4-connectivity over tiles that are passable (not `SOLID`) and not hazards (`HAZARD` tiles block the fill, so a route of spikes doesn't count as connected). `ONE_WAY` tiles are passable.
 - **Pass:** every post zone is inside the filled region.
 - **Repair:**
-  - For each post that wasn't reached, carve a 3-tile-tall tunnel from the nearest filled tile to its doorway (an L-shape with noise), clear any hazards on that path, and run the fill again.
+  - For each post that wasn't reached, carve a tunnel (same brush as routes) from the nearest filled tile to its doorway: vertical first, then horizontal. Add platforms along it with the same envelope rule, and run the fill again.
   - Repair is limited to a few rounds.
   - If it still fails, regenerate with the next sub-seed (`seed, attempt+1`). This loop is deterministic, so the client ends up on the same attempt.
 - **Known gap:** flood fill treats every connected air tile as reachable, **ignoring gravity and jump height**. A post at the top of a 20-tile vertical shaft passes the check, but nobody can jump up to it. Step 4's jump envelope makes this rare but not impossible. Playtesting and the preview tool (below) are how we catch it until v2.
@@ -82,22 +94,30 @@ Because this uses the real step function, it stays correct when the movement tun
 
 ## Tooling
 
-- **`client/tools/worldgen.html`** is a dev-only preview page. It draws the map to a 2D canvas with posts, spawners, the flood-fill region, and the corridors from the route stage. It has a seed input and forward/back buttons. It's a DOM page on purpose: it's a tool, not the game.
+- **`/tools/worldgen.html`** is a dev-only preview page. It draws the whole map (1 px per tile, zoom 1–4×) with posts and their names, the spawn post, the flood-fill region, and the carved route paths. It shows the generation stats, has seed input with forward/back/random buttons, and a "play this seed" link (`/?seed=N`). It's a DOM page on purpose: it's a tool, not the game.
 - `test/worldgen.test.js`:
   - The golden hash matches for a fixed seed.
-  - 200 random seeds all pass reachability.
+  - The same seed gives the same world.
+  - 200 seeds all pass reachability, with well-formed, uniquely named posts and a spawn tile standing on floor.
+  - All three post kinds appear across seeds.
   - Generation time stays under budget.
+  - The physics still beats `ENVELOPE`.
+  - RNG and noise properties.
+- `npm run bench -- worldgen`: 50 worlds. Measured 2026-09-30 in Node 24: **mean 93 ms, p95 110 ms, max 200 ms**, 1 retry, 3 repair tunnels, about 110 platforms per world.
 
 ## Status
 
 | Milestone | Scope | State |
 |---|---|---|
 | M1 | Hand-written test map in the same format (not generated): `shared/maps/test.js` | **done** 2026-09-30 |
-| M2 | rng, noise, pipeline stages 1–4 and 6, map hash, preview tool | not started |
+| M2 | rng, noise, pipeline stages 1–4 and 6, map hash, server seed + client regen/verify, preview tool | **done** 2026-09-30 |
 | M5 | stage 5 (hazards, spawners) | not started |
 | M6+ | reachability v2 | not started |
 
 ## Open questions
+
+- **Cave interiors are still rough.** Only the surface and routes are terraced. Natural caves keep 1-tile bumps from the noise. That's fine while caves are mostly scenery that routes pass through, but it's worth revisiting if caves become places to explore.
+- **Sky posts** depend on route platforms, which the flood fill can't check (see the known gap above). Watch for them in the preview tool and in playtests.
 
 - **Map size:** is 1024 × 256 right? We'll tune it to how long a post-to-post run should take (target: about 30–90 s per route).
 - **Biomes:** should different regions have distinct looks and hazards (and later, the goods produced there, see [ECONOMY.md § v3](ECONOMY.md#v3-production-tree))?

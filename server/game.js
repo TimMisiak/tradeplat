@@ -1,15 +1,25 @@
 // World instance and fixed-tick loop. See ARCHITECTURE.md § Simulation.
-// M0: only the tick clock. The world, players and market plug in here later.
+// The world is generated from a seed on start (WORLDGEN.md). Clients get only
+// {seed, genVersion, hash} and regenerate it themselves. Players and the market plug in later.
 import { performance } from 'node:perf_hooks';
+import { randomInt } from 'node:crypto';
 import { TICK_RATE } from '../shared/physics.js';
+import { generateWorld } from '../shared/worldgen.js';
 
 export { TICK_RATE };
 const TICK_MS = 1000 / TICK_RATE;
 /** Longest catch-up after a stall (e.g. debugger pause) before we drop time instead. */
 const MAX_CATCHUP_TICKS = 30;
 
-export function createGame() {
+/** @param {{seed?: number}} [opts] seed defaults to a random 32-bit value */
+export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
+  const t0 = performance.now();
+  const world = generateWorld(seed);
+  const genMs = performance.now() - t0;
+
   const game = {
+    world,
+    genMs,
     tick: 0,
     running: false,
     /** @type {((tick: number) => void)[]} */

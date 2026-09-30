@@ -73,7 +73,7 @@ frame index = N·1 + E·2 + S·4 + W·8      (1 = the neighbour in that directio
  4: S only (a top cap)    9: N+W (bottom-right)     3: N+E (bottom-left)
 ```
 
-A side whose bit is **0** is exposed: draw the edge or grass lip there. A side whose bit is **1** must join seamlessly with the neighbouring tile. The renderer works out the mask from the map at draw time, so nothing has to be baked in. The asset viewer shows a sample blob built from your strip, so seams show up right away.
+A side whose bit is **0** is exposed: draw the edge or grass lip there. A side whose bit is **1** must join seamlessly with the neighbouring tile. A neighbour counts as joined if it's **the same tile, or if both tiles are solid**. So terrain under a post floor, or beside a post wall, has no exposed edge on that side. One-way platforms, spikes and air always count as exposed. The renderer works out the mask from the map at draw time, so nothing has to be baked in. The asset viewer shows a sample blob built from your strip, so seams show up right away.
 
 ## Sprites
 
@@ -142,7 +142,7 @@ These are 16×16 icons for the trade menu, one per good in `shared/goods.js`: `w
 | Tiles | none yet |
 | Sprites | none yet |
 | Goods icons | none yet |
-| Renderer support | **Player sprite: live since M1.** Checked with throwaway test art: the atlas packs it, animations switch with physics state, it's mirrored for facing left, and it's anchored at the feet. Tiles still use flat palette colors with edge shading (tile art is M2). Enemies and fx come in M5, icons in M4 |
+| Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. Enemies and fx come in M5, icons in M4 |
 
 ## Open questions
 

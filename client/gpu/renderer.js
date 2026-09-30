@@ -9,7 +9,7 @@ export const VIEW_H = 360;
 
 const LETTERBOX = { r: 0, g: 0, b: 0, a: 1 };
 const MAX_TILE_STYLES = 16;
-const STYLE_FLOATS = 12; // fill vec4 + edge vec4 + params vec4
+const STYLE_FLOATS = 16; // fill + edge + params + flags, 4 floats each
 const INSTANCE_FLOATS = 12; // rect vec4 + color vec4 + uv vec4
 
 export class WebGPUUnavailableError extends Error {}
@@ -80,6 +80,20 @@ export async function createRenderer(canvas) {
   let tileTex = null;
   let tileBindGroup = null;
   let mapSize = [0, 0];
+  // Tile art: a 16×16 texture array (see assets.js loadTileArt). A 1-layer dummy until set.
+  let tileArtTex = device.createTexture({ size: [16, 16, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+  function rebuildTileBindGroup() {
+    if (!tileTex) return;
+    tileBindGroup = device.createBindGroup({
+      layout: tilePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: viewBuf } },
+        { binding: 1, resource: { buffer: styleBuf } },
+        { binding: 2, resource: tileTex.createView() },
+        { binding: 3, resource: tileArtTex.createView({ dimension: '2d-array' }) },
+      ],
+    });
+  }
 
   // Sprite pass
   const spriteModule = device.createShaderModule({ label: 'sprites', code: SPRITE_WGSL });
@@ -131,10 +145,19 @@ export async function createRenderer(canvas) {
   device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
   setAtlas(white);
 
+  /** Use a tile art texture array (layers referenced by style `art.layer`). */
+  function setTileArt(texture) {
+    tileArtTex = texture;
+    rebuildTileBindGroup();
+  }
+
   /**
    * Upload a tile map and its style table.
    * @param {import('../../shared/tiles.js').TileMap} map
-   * @param {{fill: number[], edge?: number[], shape?: number, edgeWidth?: number}[]} styles indexed by tile id
+   * @param {TileStyle[]} styles indexed by tile id
+   *
+   * @typedef {{fill: number[], edge?: number[], shape?: number, edgeWidth?: number, solid?: boolean,
+   *   art?: {layer: number, autotile: boolean}}} TileStyle
    */
   function setMap(map, styles) {
     tileTex?.destroy();
@@ -149,6 +172,7 @@ export async function createRenderer(canvas) {
     mapSize = [map.w, map.h];
 
     styleData.fill(0);
+    for (let id = 0; id < MAX_TILE_STYLES; id++) styleData[id * STYLE_FLOATS + 10] = -1; // no art
     styles.slice(0, MAX_TILE_STYLES).forEach((s, id) => {
       if (!s) return;
       const o = id * STYLE_FLOATS;
@@ -157,17 +181,12 @@ export async function createRenderer(canvas) {
       if (s.edge) { styleData.set(s.edge, o + 4); styleData[o + 7] = s.edge[3] ?? 1; }
       styleData[o + 8] = s.shape ?? 0;
       styleData[o + 9] = s.edgeWidth ?? 0;
+      styleData[o + 10] = s.art ? s.art.layer : -1;
+      styleData[o + 11] = s.art?.autotile ? 1 : 0;
+      styleData[o + 12] = s.solid ? 1 : 0;
     });
     device.queue.writeBuffer(styleBuf, 0, styleData);
-
-    tileBindGroup = device.createBindGroup({
-      layout: tilePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: viewBuf } },
-        { binding: 1, resource: { buffer: styleBuf } },
-        { binding: 2, resource: tileTex.createView() },
-      ],
-    });
+    rebuildTileBindGroup();
   }
 
   /** Change one tile after setMap (e.g. breakable blocks later). */
@@ -250,6 +269,7 @@ export async function createRenderer(canvas) {
     setMap,
     setTile,
     setAtlas,
+    setTileArt,
     get viewport() { return viewport; },
     /** Resolves if the GPU device is lost (driver reset, tab backgrounded on some platforms). */
     lost: device.lost,

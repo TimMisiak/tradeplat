@@ -1,15 +1,17 @@
 // Client entry: boot the renderer, assets and network, then run the game loop.
-// M1: local single-player on the hand-written test map (shared/maps/test.js).
+// Single-player movement on the server's generated world (seed from the welcome
+// message). Dev overrides: ?seed=N generates locally, ?map=test loads the M1 test level.
 import { createRenderer, SpriteBatch, WebGPUUnavailableError } from './gpu/renderer.js';
-import { hexToRgba, loadManifest, loadSpriteAtlas } from './assets.js';
+import { hexToRgba, loadManifest, loadSpriteAtlas, loadTileArt } from './assets.js';
 import { createCamera } from './camera.js';
 import { createInput } from './input.js';
 import { createNet } from './net.js';
 import { animFor, createAnimator, drawPlayer } from './player-view.js';
 import { createTuningPanel } from './dev/tuning.js';
 import { TICK_RATE, createPlayer, step } from '../shared/physics.js';
-import { TILE, TILE_SIZE } from '../shared/tiles.js';
+import { FLAG, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
 import { createTestMap } from '../shared/maps/test.js';
+import { GEN_VERSION, generateWorld } from '../shared/worldgen.js';
 
 const TICK_S = 1 / TICK_RATE;
 /** Longest frame gap we simulate. Beyond this (tab in background) time is dropped. */
@@ -24,8 +26,11 @@ function showFallback(html) {
 
 const shade = ([r, g, b, a], k) => [r * k, g * k, b * k, a];
 
-/** Tile style table (indexed by tile id) from the manifest palette. See TILE_WGSL. */
-function tileStyles(color) {
+/**
+ * Tile style table (indexed by tile id): tile art where the manifest has it, flat
+ * palette shapes otherwise. See TILE_WGSL.
+ */
+function tileStyles(color, art) {
   const styles = [];
   styles[TILE.empty] = { fill: color('sky') };
   styles[TILE.solid] = { fill: color('terrain'), edge: color('terrainEdge'), edgeWidth: 2 };
@@ -33,6 +38,11 @@ function tileStyles(color) {
   styles[TILE.oneWay] = { fill: color('oneWay'), edge: shade(color('oneWay'), 1.35), shape: 1 };
   styles[TILE.postFloor] = { fill: color('postFloor'), edge: shade(color('postFloor'), 1.3), edgeWidth: 1 };
   styles[TILE.postWall] = { fill: color('postWall'), edge: shade(color('postWall'), 1.4), edgeWidth: 1 };
+  TILES.forEach((t, id) => {
+    if (!styles[id]) return;
+    styles[id].solid = (t.flags & FLAG.SOLID) !== 0;
+    if (art[t.name]) styles[id].art = art[t.name];
+  });
   return styles;
 }
 
@@ -60,28 +70,64 @@ async function boot() {
   const color = (key, alpha = 1) => hexToRgba(manifest?.palette?.[key] ?? '#ff00ff', alpha);
   const { texture: atlas, sprites } = await loadSpriteAtlas(renderer.device, manifest);
   if (atlas) renderer.setAtlas(atlas);
+  const { texture: tileArt, art } = await loadTileArt(renderer.device, manifest);
+  if (tileArt) renderer.setTileArt(tileArt);
   const playerColors = { player: color('player'), outline: shade(color('sky'), 0.5) };
-
-  // World
-  const map = createTestMap();
-  renderer.setMap(map, tileStyles(color));
-  const spawnAt = map.markers['@'][0];
 
   const panel = createTuningPanel();
   const tuning = panel.tuning;
   const center = (p) => [p.x + tuning.width / 2, p.y + tuning.height / 2];
-  const spawn = () => createPlayer((spawnAt.tx + 0.5) * TILE_SIZE, (spawnAt.ty + 1) * TILE_SIZE, tuning);
-  let prev = spawn();
-  let cur = prev;
-
   const input = createInput();
   const camera = createCamera();
-  camera.snap(...center(cur), map);
   const animator = createAnimator();
   const batch = new SpriteBatch();
+  const styles = tileStyles(color, art);
 
+  // World: loaded from the server's seed, or from a dev override.
   const params = new URLSearchParams(location.search);
+  /** @type {{map: import('../shared/tiles.js').TileMap, spawn: {tx: number, ty: number}, seed: number | null, label: string} | null} */
+  let world = null;
+  let prev = null;
+  let cur = null;
+  const spawn = () => createPlayer((world.spawn.tx + 0.5) * TILE_SIZE, (world.spawn.ty + 1) * TILE_SIZE, tuning);
+  const respawn = () => {
+    prev = cur = spawn();
+    camera.snap(...center(cur), world.map);
+  };
+
+  function useWorld(next) {
+    world = next;
+    renderer.setMap(world.map, styles);
+    respawn();
+    console.info(`[world] ${world.label}`);
+  }
+
+  function useSeed(seed, expected) {
+    const t0 = performance.now();
+    const gen = generateWorld(seed);
+    const ms = performance.now() - t0;
+    if (expected && (expected.genVersion !== GEN_VERSION || expected.hash !== gen.hash)) {
+      // Different generator code on each side (stale cache or a deploy mid-session).
+      console.error(`[world] mismatch: server genVersion ${expected.genVersion} hash ${expected.hash}, client genVersion ${GEN_VERSION} hash ${gen.hash}`);
+      showFallback('This page is out of date with the server. Reload to continue.');
+      return;
+    }
+    const post = gen.posts[gen.spawnPost];
+    useWorld({ map: gen, spawn: post.spawn, seed, label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}` });
+  }
+
   const net = createNet({ name: params.get('name') ?? 'Trader' });
+  if (params.get('map') === 'test') {
+    const map = createTestMap();
+    useWorld({ map, spawn: map.markers['@'][0], seed: null, label: 'M1 test map' });
+  } else if (params.has('seed')) {
+    useSeed(Number(params.get('seed')) >>> 0, null);
+  } else {
+    // The server restarting means a new world; regenerate when the seed changes.
+    net.onWelcome.push((msg) => {
+      if (msg.world && msg.world.seed !== world?.seed) useSeed(msg.world.seed, msg.world);
+    });
+  }
 
   let tick = 0;
   let acc = 0;
@@ -90,19 +136,25 @@ async function boot() {
   let resetHeld = false;
 
   // Handles for poking at the client from the dev console.
-  globalThis.game = { renderer, net, map, tuning, get player() { return cur; } };
+  globalThis.game = { renderer, net, tuning, get world() { return world; }, get player() { return cur; } };
 
   function frame(now) {
     const dt = Math.min((now - last) / 1000, MAX_FRAME_S);
     last = now;
     fps += (1 / Math.max(dt, 1e-3) - fps) * 0.05;
 
+    if (!world) {
+      // Waiting for the server's seed.
+      batch.clear();
+      renderer.frame({ cam: [0, 0], sprites: batch });
+      requestAnimationFrame(frame);
+      return;
+    }
+    const map = world.map;
+
     // R respawns (dev convenience until death/respawn lands in M5).
     const reset = input.isDown('KeyR');
-    if (reset && !resetHeld) {
-      prev = cur = spawn();
-      camera.snap(...center(cur), map);
-    }
+    if (reset && !resetHeld) respawn();
     resetHeld = reset;
 
     // Fixed-step simulation
@@ -132,6 +184,7 @@ async function boot() {
     if (panel.visible) {
       panel.show(
         `fps ${fps.toFixed(0)}  tick ${tick}  net ${net.status}${net.rtt ? ` ${net.rtt.toFixed(0)}ms` : ''}\n` +
+        `world ${world.label}\n` +
         `pos ${cur.x.toFixed(1)}, ${cur.y.toFixed(1)}  tile ${Math.floor((cur.x + tuning.width / 2) / TILE_SIZE)}, ${Math.floor((cur.y + tuning.height) / TILE_SIZE)}\n` +
         `vel ${cur.vx.toFixed(2)}, ${cur.vy.toFixed(2)}  anim ${anim.anim}\n` +
         `ground ${cur.onGround ? 'y' : 'n'}  wall ${cur.wallDir}  coyote ${cur.coyote}  buffer ${cur.jumpBuffer}  lock ${cur.wallLock}\n` +

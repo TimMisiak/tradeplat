@@ -13,18 +13,22 @@ struct View {
 /**
  * Tile pass: one fullscreen triangle. Each fragment finds its world pixel,
  * looks up the tile id in an r8uint texture, and shades it from a per-tile style
- * table. Cost doesn't depend on map size. Tile art (texture array) is added in M2.
+ * table: tile art from a texture array if the tile has any (ART.md), otherwise a
+ * flat palette shape. Cost doesn't depend on map size.
  */
 export const TILE_WGSL = /* wgsl */ `
 ${VIEW_STRUCT}
 struct TileStyle {
-  fill: vec4f,     // main color
-  edge: vec4f,     // color for exposed edges (a = 0 → no edge)
-  params: vec4f,   // x: shape (0 block, 1 top strip, 2 spikes), y: edge width px
+  fill: vec4f,     // flat color
+  edge: vec4f,     // flat color for exposed edges (a = 0 → no edge)
+  params: vec4f,   // x: shape (0 block, 1 top strip, 2 spikes), y: edge width px,
+                   // z: first art layer (-1 = no art), w: 1 if the art is a cardinal4 strip
+  flags: vec4f,    // x: 1 if solid (spikes attach to solid neighbours)
 };
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> styles: array<TileStyle, 16>;
 @group(0) @binding(2) var tiles: texture_2d<u32>;
+@group(0) @binding(3) var tileArt: texture_2d_array<f32>;
 
 struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
@@ -43,35 +47,74 @@ fn tileId(t: vec2i) -> u32 {
   return textureLoad(tiles, t, 0).r;
 }
 
+fn isSolid(t: vec2i) -> bool {
+  return styles[min(tileId(t), 15u)].flags.x > 0.5;
+}
+
+fn joins(id: u32, solid: bool, n: vec2i) -> bool {
+  let nid = tileId(n);
+  return nid == id || (solid && styles[min(nid, 15u)].flags.x > 0.5);
+}
+
+/**
+ * Spikes are authored pointing up. Map a pixel of this tile to the art pixel,
+ * rotated so the base sits on the solid neighbour: below, else above, else left, else right.
+ */
+fn spikeLocal(t: vec2i, l: vec2f) -> vec2f {
+  if (isSolid(t + vec2i(0, 1))) { return l; }
+  if (isSolid(t + vec2i(0, -1))) { return vec2f(15.0 - l.x, 15.0 - l.y); }
+  if (isSolid(t + vec2i(-1, 0))) { return vec2f(l.y, 15.0 - l.x); }
+  if (isSolid(t + vec2i(1, 0))) { return vec2f(15.0 - l.y, l.x); }
+  return l;
+}
+
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4f {
   let world = view.cam + floor(in.uv * view.size);
   let t = vec2i(floor(world / 16.0));
-  let local = world - vec2f(t) * 16.0; // 0..15, pixel within the tile
+  var local = world - vec2f(t) * 16.0; // 0..15, pixel within the tile
   let id = tileId(t);
   let sky = styles[0].fill;
   if (id == 0u) { return sky; }
   let st = styles[min(id, 15u)];
   let shape = u32(st.params.x);
+  if (shape == 2u) { local = spikeLocal(t, local); }
+
+  // Joined neighbours, N=1 E=2 S=4 W=8 (the cardinal4 layout in ART.md). A neighbour
+  // joins if it's the same tile, or if both are solid (terrain under a post floor
+  // shouldn't grow a grass edge).
+  let solid = st.flags.x > 0.5;
+  var mask = 0;
+  if (joins(id, solid, t + vec2i(0, -1))) { mask |= 1; }
+  if (joins(id, solid, t + vec2i(1, 0))) { mask |= 2; }
+  if (joins(id, solid, t + vec2i(0, 1))) { mask |= 4; }
+  if (joins(id, solid, t + vec2i(-1, 0))) { mask |= 8; }
+
+  if (st.params.z >= 0.0) {
+    var layer = i32(st.params.z);
+    if (st.params.w > 0.5) { layer += mask; }
+    let c = textureLoad(tileArt, vec2i(local), layer, 0);
+    return mix(sky, vec4f(c.rgb, 1.0), c.a);
+  }
 
   if (shape == 1u) { // one-way platform: a 4 px strip on top
     if (local.y >= 4.0) { return sky; }
     if (local.y < 1.0) { return st.edge; }
     return st.fill;
   }
-  if (shape == 2u) { // spikes: two upward teeth per tile
+  if (shape == 2u) { // spikes: two teeth, pointing away from the base
     let cx = abs((local.x % 8.0) - 3.5);
     if (cx > (local.y - 4.0) * 0.4) { return sky; }
     return st.fill;
   }
 
-  // Block: exposed sides get the edge color (like cardinal4 autotiling)
+  // Block: exposed sides get the edge color (a flat version of cardinal4 autotiling)
   let e = st.params.y;
   if (st.edge.a > 0.0 && e > 0.0) {
-    if ((local.y < e && tileId(t + vec2i(0, -1)) != id) ||
-        (local.x >= 16.0 - e && tileId(t + vec2i(1, 0)) != id) ||
-        (local.y >= 16.0 - e && tileId(t + vec2i(0, 1)) != id) ||
-        (local.x < e && tileId(t + vec2i(-1, 0)) != id)) {
+    if ((local.y < e && (mask & 1) == 0) ||
+        (local.x >= 16.0 - e && (mask & 2) == 0) ||
+        (local.y >= 16.0 - e && (mask & 4) == 0) ||
+        (local.x < e && (mask & 8) == 0)) {
       return st.edge;
     }
   }
