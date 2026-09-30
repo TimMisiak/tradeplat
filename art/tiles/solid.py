@@ -8,7 +8,8 @@ HERE = Path(__file__).resolve().parent
 PALETTE = json.loads((ROOT / 'client/assets/manifest.json').read_text())['palette']
 FILL = PALETTE['terrain']
 EDGE = PALETTE['terrainEdge']
-SHADOW = PALETTE['sky']
+# Art-only terrain shade: lighter than the sky, darker than the rock face.
+SHADOW = '#2c3446'
 
 
 def tile(mask):
@@ -35,8 +36,6 @@ def tile(mask):
         d.line((2, 2, 6, 2), fill=EDGE)
         d.line((10, 2, 13, 2), fill=EDGE)
         d.point((4, 3), fill=EDGE)
-        d.line((8, 5, 10, 5), fill=SHADOW)
-        d.point((11, 6), fill=SHADOW)
     return im
 
 

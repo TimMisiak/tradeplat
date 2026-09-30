@@ -36,6 +36,10 @@ Rules:
 
 Colors are defined in `manifest.json` → `palette`. The game uses them **now** for the flat-color fallback, so art and fallback look consistent. The palette may be adjusted, and changing it here recolors the fallback everywhere.
 
+Solid-ground art also uses a dedicated shadow shade, `#2c3446`, defined in its
+source generator. This art-only color separates shadowed rock from the sky
+without adding a runtime palette key or changing other assets.
+
 | Key | Used for |
 |---|---|
 | `sky` | background behind the level |
@@ -154,9 +158,12 @@ Art completion is separate from renderer/gameplay implementation.
 
 ### Solid ground — first style pass
 
-Muted slate rock uses the existing `terrain`, `terrainEdge`, and `sky` colors.
+Muted slate rock uses the existing `terrain` and `terrainEdge` colors plus the
+art-only shadow shade `#2c3446`, which remains distinct from the sky.
 Exposed top edges have a light chipped rim; left faces catch light and right/bottom
 faces are shadowed. Interiors remain plain so connected tiles do not form a grid.
+The repeating interior crack has been removed; crack detail is deferred until
+tile variants can avoid obvious repetition.
 
 The native 16×16 frames are exported as a 256×16 cardinal4 strip in
 [client/assets/tiles/solid.png](client/assets/tiles/solid.png). The full strip passes

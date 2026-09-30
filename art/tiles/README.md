@@ -2,8 +2,10 @@
 
 Muted slate rock with a continuous light top rim, small chips along exposed
 edges, a lit left face, and shadowed right/bottom faces. Interiors are plain
-so large filled areas do not become a grid of outlined blocks. All colors
-come from the existing manifest; no palette entries are changed.
+so large filled areas do not become a grid of outlined blocks. Fill and highlight
+come from the manifest. The art-only shadow shade is `#2c3446`, lighter than the
+sky so exposed right/bottom faces remain visible. No runtime palette keys change.
+Repeated interior cracks are omitted until tile variants are supported.
 
 `solid.py` draws directly at 16×16 using Python 3 and Pillow. Regenerate with:
 
