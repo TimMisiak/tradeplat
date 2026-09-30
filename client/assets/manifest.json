@@ -20,7 +20,9 @@
       "#a3b86c", "#f4a261", "#9aa5ff", "#e07a5f", "#b5e48c", "#d4a5a5"
     ]
   },
-  "tiles": {},
+  "tiles": {
+    "solid": { "file": "tiles/solid.png", "autotile": "cardinal4" }
+  },
   "sprites": {
     "player": {
       "frame": [24, 24],

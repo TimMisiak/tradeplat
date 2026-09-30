@@ -144,12 +144,25 @@ Art completion is separate from renderer/gameplay implementation.
 | Palette | Initial manifest palette in use by the player art and flat-color fallback; broader art direction still open |
 | Player — required animations | **Done and reviewed:** `idle`, `run`, `jump`, `fall`, `wallSlide`; exported and registered in the manifest |
 | Player — optional animations | Not started: `land`, `death` |
-| Tiles | Not started: `solid`, `spike`, `oneWay`, `postFloor`, `postWall` |
+| Solid ground | **First pass ready for review:** `solid`, all 16 cardinal4 frames exported and registered |
+| Other tiles | Not started: `spike`, `oneWay`, `postFloor`, `postWall` |
 | Enemies and hazards | Not started: patroller `walk`, flyer `fly`, saw `spin`; optional patroller `stomped` also outstanding |
 | Effects | Not started: dust `puff`, splat `burst` and `stain` |
 | Post sign | Not started: postSign `idle` |
 | Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
 | Renderer support | M0: none. Tiles from M2, sprites as each entity lands (player M1, enemies and fx M5), icons M4 |
+
+### Solid ground — first style pass
+
+Muted slate rock uses the existing `terrain`, `terrainEdge`, and `sky` colors.
+Exposed top edges have a light chipped rim; left faces catch light and right/bottom
+faces are shadowed. Interiors remain plain so connected tiles do not form a grid.
+
+The native 16×16 frames are exported as a 256×16 cardinal4 strip in
+[client/assets/tiles/solid.png](client/assets/tiles/solid.png). The full strip passes
+asset validation; visual approval is pending. Source and regeneration instructions
+are in [art/tiles/](art/tiles/README.md), alongside previews of all masks, an irregular
+autotiled blob, and a mock level composition with the approved courier.
 
 ### Completed player art
 
