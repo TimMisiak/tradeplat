@@ -26,7 +26,11 @@
       "frame": [24, 24],
       "anchor": [12, 24],
       "anims": {
-        "idle": { "file": "sprites/player/idle.png", "frames": 4, "fps": 6, "loop": true }
+        "idle": { "file": "sprites/player/idle.png", "frames": 4, "fps": 6, "loop": true },
+        "run": { "file": "sprites/player/run.png", "frames": 6, "fps": 12, "loop": true },
+        "jump": { "file": "sprites/player/jump.png", "frames": 2, "fps": 10, "loop": false },
+        "fall": { "file": "sprites/player/fall.png", "frames": 2, "fps": 8, "loop": true },
+        "wallSlide": { "file": "sprites/player/wallslide.png", "frames": 2, "fps": 8, "loop": true }
       }
     }
   },
