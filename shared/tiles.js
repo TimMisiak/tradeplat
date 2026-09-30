@@ -9,7 +9,12 @@ export const FLAG = Object.freeze({
   HAZARD: 1 << 2, // kills on touch
   NO_SPAWN: 1 << 3, // no hazards or enemy spawners (post surroundings)
   POST: 1 << 4, // part of a trade post structure
+  SLOPE_R: 1 << 5, // 45° ramp rising to the right ('/'): solid below the diagonal
+  SLOPE_L: 1 << 6, // 45° ramp rising to the left ('\\')
 });
+
+/** Either ramp direction. Ramps are not SOLID: physics treats them as a walkable surface. */
+export const SLOPE = FLAG.SLOPE_R | FLAG.SLOPE_L;
 
 /** Tile table. The array index is the tile id stored in the map. */
 export const TILES = Object.freeze([
@@ -19,6 +24,8 @@ export const TILES = Object.freeze([
   { name: 'oneWay', flags: FLAG.ONE_WAY },
   { name: 'postFloor', flags: FLAG.SOLID | FLAG.POST | FLAG.NO_SPAWN },
   { name: 'postWall', flags: FLAG.SOLID | FLAG.POST | FLAG.NO_SPAWN },
+  { name: 'slopeR', flags: FLAG.SLOPE_R },
+  { name: 'slopeL', flags: FLAG.SLOPE_L },
 ]);
 
 export const TILE = Object.freeze(Object.fromEntries(TILES.map((t, id) => [t.name, id])));
@@ -59,6 +66,8 @@ export const ASCII_LEGEND = Object.freeze({
   '=': TILE.oneWay,
   '_': TILE.postFloor,
   '|': TILE.postWall,
+  '/': TILE.slopeR,
+  '\\': TILE.slopeL,
 });
 
 /**

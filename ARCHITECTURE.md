@@ -70,6 +70,13 @@ The static server maps `/` → `client/` and `/shared/` → `shared/`. Client mo
 - **A fixed 60 Hz tick** on both sides. The client runs a fixed-step accumulator separate from `requestAnimationFrame`, and interpolates between the last two physics states when it renders. The server runs an accumulator loop driven by `performance.now()`. It does not use a bare `setInterval`, which drifts.
 - **`step(player, input, map, tuning) → player`** in `shared/physics.js` is pure: no globals, no time source, no randomness. The player state is a small plain object: `{x, y, vx, vy, onGround, wallDir, coyote, jumpBuffer, wallLock, …}`.
 - **Collision:** the player's AABB is tested against the tile grid one axis at a time (move X, resolve; move Y, resolve). Terminal velocity is capped at ≤ 1 tile per tick, so the player can't tunnel through tiles, and no swept collision is needed in v1. One-way platforms are solid only from above, and only when down is not held.
+- **Ramps** (45° `slopeR`/`slopeL` tiles) are walkable surfaces, not solids:
+  - The box rests on the **highest ramp point under its bottom edge**.
+  - While grounded, running uphill lifts the box by up to `|vx|+1` px per tick, but not if that would push the head into a ceiling. Running downhill keeps it stuck to the surface by the same amount, so you don't hop off.
+  - A solid tile that overlaps only that bottom margin is a step to walk onto, not a wall (the flat top at the end of a ramp). A ramp blocks like a wall only from its **tall side**.
+  - Horizontal speed is the same on ramps as on flat ground.
+  - Because the box rests on its highest corner, its centre floats up to 6 px above the ramp. `feetY()` gives the renderer the surface height under the centre, so the sprite's feet are drawn on the ramp.
+  - On a map with no ramps, the behaviour is exactly the same as before, and the physics golden hash didn't change.
 - **Hazards and enemies** are checked after the move: spike tiles via tile flags, and enemies via AABB overlap with `enemies.position(spawner, tick)`.
 - **Why pure:** a pure step function can be replayed, so reconciliation is simple and rollback for PvP stays possible later.
 

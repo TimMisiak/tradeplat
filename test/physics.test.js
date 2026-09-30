@@ -286,3 +286,83 @@ function hashStates(states) {
   }
   return (h >>> 0).toString(16).padStart(8, '0');
 }
+
+// Ramps
+
+const HILL = parseAsciiMap([
+  '....................',
+  '....................',
+  '....................',
+  '....................',
+  '....................',
+  '....................',
+  '...../########\\.....',
+  '..../##########\\....',
+  '.@./############\\...',
+  '####################',
+]);
+
+test('ramps: run over a hill both ways without jumping', () => {
+  let p = settle(spawn(HILL), HILL);
+  let top = p.y;
+  for (let i = 0; i < 120 && p.x < 18 * TILE_SIZE; i++) {
+    p = step(p, RIGHT, HILL);
+    assert.equal(p.onGround, true, `airborne at x=${p.x.toFixed(1)}`);
+    top = Math.min(top, p.y);
+  }
+  assert.ok(p.x >= 18 * TILE_SIZE, `stuck at x=${p.x.toFixed(1)}`);
+  assert.equal(top + T.height, 6 * TILE_SIZE, 'went over the plateau');
+  assert.equal(p.y + T.height, 9 * TILE_SIZE, 'back on the floor');
+  for (let i = 0; i < 120 && p.x > TILE_SIZE; i++) {
+    p = step(p, LEFT, HILL);
+    assert.equal(p.onGround, true, `airborne going left at x=${p.x.toFixed(1)}`);
+  }
+  assert.ok(p.x <= TILE_SIZE);
+});
+
+test('ramps: standing on one does not slide; jumping off one works', () => {
+  let p = settle(spawn(HILL), HILL);
+  // Walk partway up the left ramp and stop.
+  p = lastOf(run(p, HILL, 200, (i, s) => (s.x < 3.6 * TILE_SIZE ? RIGHT : 0)));
+  p = settle(p, HILL);
+  const still = run(p, HILL, 60, 0);
+  for (const s of still) {
+    assert.equal(s.x, p.x);
+    assert.equal(s.y, p.y);
+    assert.equal(s.onGround, true);
+  }
+  assert.ok(p.y + T.height < 9 * TILE_SIZE && p.y + T.height > 6 * TILE_SIZE, 'resting partway up');
+  const jumped = step(p, JUMP, HILL);
+  assert.ok(jumped.vy < 0 && !jumped.onGround);
+});
+
+test('ramps: the tall side blocks like a wall', () => {
+  const map = parseAsciiMap([
+    '..........',
+    '..........',
+    '.@...\\....',
+    '##########',
+  ]);
+  const states = run(settle(spawn(map), map), map, 60, RIGHT);
+  const p = lastOf(states);
+  assert.equal(p.x, 5 * TILE_SIZE - T.width, 'stopped at the ramp\'s tall left edge');
+  assert.equal(p.y + T.height, 3 * TILE_SIZE, 'still on the floor');
+});
+
+test('ramps: falling onto one lands on its surface', () => {
+  const map = parseAsciiMap([
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '..........',
+    '...../####',
+    '##########',
+  ]);
+  let p = createPlayer(5 * TILE_SIZE + 4, TILE_SIZE); // box spans x 74..86, over the ramp and the block
+  const states = run(p, map, 60, 0);
+  p = lastOf(states);
+  assert.equal(p.onGround, true);
+  // The box (x 74..86) rests on the ramp's highest point under it, at its right edge.
+  assert.equal(p.y + T.height, 6 * TILE_SIZE - (p.x + T.width - 5 * TILE_SIZE));
+});

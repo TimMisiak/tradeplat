@@ -60,6 +60,8 @@ One PNG per tile type. Tile names come from `shared/tiles.js`.
 | `oneWay` | single, 16×16 | A thin ledge. The top 4 px should read clearly as "stand here", and the rest is mostly transparent |
 | `postFloor` | `cardinal4` autotile, 256×16 | Trade post floor |
 | `postWall` | `cardinal4` autotile, 256×16 | Trade post walls and roof |
+| `slopeR` | single, 16×16 | 45° ramp rising to the right ('/'). Solid below the diagonal from bottom-left to top-right, transparent above it. Put the grass or edge lip along the diagonal. The interior should match `solid`'s interior, because ramps sit against solid tiles on their tall side and below. **Also used mirrored for `slopeL`** |
+| `slopeL` | single, 16×16, optional | The '\\' ramp. Only needed if the mirrored `slopeR` doesn't work (for example, lighting from the top-left looks wrong when flipped) |
 
 ### `cardinal4` autotiling
 
@@ -73,7 +75,7 @@ frame index = N·1 + E·2 + S·4 + W·8      (1 = the neighbour in that directio
  4: S only (a top cap)    9: N+W (bottom-right)     3: N+E (bottom-left)
 ```
 
-A side whose bit is **0** is exposed: draw the edge or grass lip there. A side whose bit is **1** must join seamlessly with the neighbouring tile. A neighbour counts as joined if it's **the same tile, or if both tiles are solid**. So terrain under a post floor, or beside a post wall, has no exposed edge on that side. One-way platforms, spikes and air always count as exposed. The renderer works out the mask from the map at draw time, so nothing has to be baked in. The asset viewer shows a sample blob built from your strip, so seams show up right away.
+A side whose bit is **0** is exposed: draw the edge or grass lip there. A side whose bit is **1** must join seamlessly with the neighbouring tile. A neighbour counts as joined if it's **the same tile, or if both tiles are solid**. **Ramps count as solid here**, so the ground under a ramp and beside its tall side shows no edge. That means terrain under a post floor, beside a post wall, or under a ramp has no exposed edge on that side. One-way platforms, spikes and air always count as exposed. The renderer works out the mask from the map at draw time, so nothing has to be baked in. The asset viewer shows a sample blob built from your strip, so seams show up right away.
 
 ## Sprites
 

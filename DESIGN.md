@@ -38,6 +38,8 @@ The target is Super Meat Boy: fast, precise and forgiving where it matters.
 
 All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. **R** respawns (a dev convenience until M5). `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
 
+**Ramps.** The world has 45° ramps, and the generator turns every 1-tile floor step into one ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline)), so hills and tunnels can be run up and down at full speed without jumping. Horizontal speed is the same on a ramp as on flat ground. A ramp's tall side is a wall. Precision challenges come from gaps, walls and hazards, not from staircases.
+
 **Cargo does not affect movement.** A full hold moves the same as an empty one. Cargo is limited only by hold capacity. This is a deliberate choice: the platforming feel never changes, and the risk of carrying cargo comes from what you'd lose, not from worse handling.
 
 Controls: keyboard first (arrows/WASD move, Space/Z/K jump, E/Enter interact). Gamepad support through the Gamepad API is cheap to add later.

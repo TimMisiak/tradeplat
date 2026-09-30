@@ -9,7 +9,7 @@ import { createNet } from './net.js';
 import { animFor, createAnimator, drawPlayer } from './player-view.js';
 import { createTuningPanel } from './dev/tuning.js';
 import { TICK_RATE, createPlayer, step } from '../shared/physics.js';
-import { FLAG, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
+import { FLAG, SLOPE, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
 import { createTestMap } from '../shared/maps/test.js';
 import { GEN_VERSION, generateWorld } from '../shared/worldgen.js';
 
@@ -38,11 +38,17 @@ function tileStyles(color, art) {
   styles[TILE.oneWay] = { fill: color('oneWay'), edge: shade(color('oneWay'), 1.35), shape: 1 };
   styles[TILE.postFloor] = { fill: color('postFloor'), edge: shade(color('postFloor'), 1.3), edgeWidth: 1 };
   styles[TILE.postWall] = { fill: color('postWall'), edge: shade(color('postWall'), 1.4), edgeWidth: 1 };
+  styles[TILE.slopeR] = { fill: color('terrain'), edge: color('terrainEdge'), edgeWidth: 2, shape: 3 };
+  styles[TILE.slopeL] = { ...styles[TILE.slopeR], mirror: true };
   TILES.forEach((t, id) => {
     if (!styles[id]) return;
-    styles[id].solid = (t.flags & FLAG.SOLID) !== 0;
+    // Ramps count as solid for joins, so the ground under and beside them shows no edge.
+    styles[id].solid = (t.flags & (FLAG.SOLID | SLOPE)) !== 0;
     if (art[t.name]) styles[id].art = art[t.name];
   });
+  // slopeL without its own art uses slopeR's, mirrored (ART.md).
+  if (art.slopeL) styles[TILE.slopeL].mirror = false;
+  else if (art.slopeR) styles[TILE.slopeL].art = art.slopeR;
   return styles;
 }
 
@@ -174,7 +180,7 @@ async function boot() {
 
     batch.clear();
     const anim = animator.update(animFor(cur), now / 1000);
-    drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, tuning);
+    drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, map, tuning);
     // Connection indicator, top-left of the view (there's no HUD text until M4)
     const netColor = net.status === 'connected' ? [0.3, 0.8, 0.4, 0.9] : net.status === 'connecting' ? [0.9, 0.8, 0.3, 0.9] : [0.9, 0.2, 0.2, 0.9];
     batch.push(Math.round(cam.x) + 4, Math.round(cam.y) + 4, 3, 3, netColor);

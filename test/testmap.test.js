@@ -74,3 +74,16 @@ test('shaft: wall jumps reach the top ledge', () => {
   }
   assert.ok(reached, `highest point: tile ${feetTile(p)}`);
 });
+
+test('runway: the ramp hill can be run over without jumping', () => {
+  let p = createPlayer(120.5 * TILE_SIZE, 31 * TILE_SIZE);
+  for (let i = 0; i < 10; i++) p = step(p, 0, map);
+  let top = p.y;
+  for (let i = 0; i < 120 && p.x < 128 * TILE_SIZE - W; i++) {
+    p = step(p, RIGHT, map);
+    assert.equal(p.onGround, true, `airborne at x=${p.x.toFixed(1)}`);
+    top = Math.min(top, p.y);
+  }
+  assert.ok(p.x >= 128 * TILE_SIZE - W - 1, `stuck at x=${p.x.toFixed(1)}`);
+  assert.equal(top + H, 29 * TILE_SIZE, 'crossed the top of the hill');
+});

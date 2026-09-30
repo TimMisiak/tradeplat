@@ -7,7 +7,12 @@
 // it (M3), so any hidden state here becomes a desync.
 //
 // Units: pixels and ticks (60 Hz). Positions are the top-left of the hitbox, y down.
-import { FLAG, TILE_FLAGS, TILE_SIZE, tileAt } from './tiles.js';
+//
+// Ramps (45° slope tiles) are walkable surfaces, not solids. The hitbox rests on
+// the highest ramp point under its bottom edge. Running uphill lifts it by up to
+// |vx|+1 px per tick, and running downhill keeps it stuck to the surface by the
+// same amount. A ramp blocks like a wall only from its tall side.
+import { FLAG, SLOPE, TILE_FLAGS, TILE_SIZE, tileAt } from './tiles.js';
 
 export const TICK_RATE = 60;
 
@@ -158,9 +163,36 @@ export function step(p, input, map, t = TUNING) {
   s.vx = clamp(s.vx, -MAX_STEP, MAX_STEP);
   s.vy = clamp(s.vy, -MAX_STEP, MAX_STEP);
 
-  // Move and collide, one axis at a time
-  moveX(s, map, t);
-  s.onGround = moveY(s, map, t, down);
+  // Move and collide, one axis at a time. `tol` is how far a ramp can rise or fall
+  // under the feet in one tick of horizontal movement.
+  const tol = Math.abs(s.vx) + 1;
+  moveX(s, map, t, p.onGround ? tol : 0, tol);
+  if (p.onGround) {
+    // Walking up a ramp, or onto the flat step at its top: lift out of the ground,
+    // unless that would put the head in a ceiling (then it's a wall after all).
+    const bottom = s.y + t.height;
+    const f = floorBetween(map, s.x, t.width, bottom - tol, bottom, down, Infinity);
+    if (f < bottom) {
+      if (solidIn(map, s.x, f - t.height, t.width, bottom - f)) {
+        s.x = p.x;
+        s.vx = 0;
+      } else {
+        s.y = f - t.height;
+      }
+    }
+  }
+  let landed = moveY(s, map, t, down, tol);
+  if (!landed && p.onGround && !s.jumping && s.vy >= 0) {
+    // Walking down a ramp: stay on the surface instead of stepping off into the air.
+    const bottom = s.y + t.height;
+    const f = floorBetween(map, s.x, t.width, bottom, bottom + tol, down, bottom);
+    if (f !== Infinity) {
+      s.y = f - t.height;
+      s.vy = 0;
+      landed = true;
+    }
+  }
+  s.onGround = landed;
   if (s.onGround) {
     s.jumping = false;
     // A buffered jump fires on the landing tick itself, with no grounded frame in between.
@@ -183,54 +215,53 @@ function groundJump(s, t) {
 const first = (a) => Math.floor(a / TILE_SIZE);
 const last = (a, len) => Math.ceil((a + len) / TILE_SIZE) - 1;
 
-function moveX(s, map, t) {
+/**
+ * @param {number} stepTol a solid tile that overlaps only this many px of the bottom
+ *   of the box is a step to walk onto, not a wall (the flat top at the end of a ramp)
+ * @param {number} slopeTol same, for the tall side of a ramp
+ */
+function moveX(s, map, t, stepTol, slopeTol) {
   if (s.vx === 0) return;
   s.x += s.vx;
+  const bottom = s.y + t.height;
   const ty0 = first(s.y), ty1 = last(s.y, t.height);
-  if (s.vx > 0) {
-    const tx = last(s.x, t.width);
-    for (let ty = ty0; ty <= ty1; ty++) {
-      if (TILE_FLAGS[tileAt(map, tx, ty)] & FLAG.SOLID) {
-        s.x = tx * TILE_SIZE - t.width;
-        s.vx = 0;
-        return;
-      }
+  const right = s.vx > 0;
+  const tx = right ? last(s.x, t.width) : first(s.x);
+  const edge = right ? s.x + t.width : s.x;
+  for (let ty = ty0; ty <= ty1; ty++) {
+    const f = TILE_FLAGS[tileAt(map, tx, ty)];
+    let wall = false;
+    if (f & FLAG.SOLID) {
+      wall = ty * TILE_SIZE < bottom - stepTol;
+    } else if (f & SLOPE) {
+      // The tall side of '/' is its right edge, and of '\\' its left edge.
+      const facingTall = right ? (f & FLAG.SLOPE_L) !== 0 : (f & FLAG.SLOPE_R) !== 0;
+      wall = facingTall && bottom - slopeY(f, tx, ty, edge) > slopeTol;
     }
-  } else {
-    const tx = first(s.x);
-    for (let ty = ty0; ty <= ty1; ty++) {
-      if (TILE_FLAGS[tileAt(map, tx, ty)] & FLAG.SOLID) {
-        s.x = (tx + 1) * TILE_SIZE;
-        s.vx = 0;
-        return;
-      }
+    if (wall) {
+      s.x = right ? tx * TILE_SIZE - t.width : (tx + 1) * TILE_SIZE;
+      s.vx = 0;
+      return;
     }
   }
 }
 
 /** Moves vertically. Returns true if the player landed on something this tick. */
-function moveY(s, map, t, down) {
+function moveY(s, map, t, down, tol) {
   const prevBottom = s.y + t.height;
   s.y += s.vy;
-  const tx0 = first(s.x), tx1 = last(s.x, t.width);
   if (s.vy > 0) {
-    // Scan every row the feet swept through, top to bottom, so a one-way platform
-    // is caught even when the feet pass its top edge between ticks.
-    const rowFrom = first(prevBottom), rowTo = last(s.y, t.height);
-    for (let ty = rowFrom; ty <= rowTo; ty++) {
-      for (let tx = tx0; tx <= tx1; tx++) {
-        const f = TILE_FLAGS[tileAt(map, tx, ty)];
-        const top = ty * TILE_SIZE;
-        if ((f & FLAG.SOLID) || ((f & FLAG.ONE_WAY) && !down && prevBottom <= top)) {
-          s.y = top - t.height;
-          s.vy = 0;
-          return true;
-        }
-      }
+    // Everything the feet passed through this tick, and a little above for a ramp
+    // the box slid into sideways. One-way tops only count if the feet came from above.
+    const f = floorBetween(map, s.x, t.width, prevBottom - tol, s.y + t.height, down, prevBottom);
+    if (f !== Infinity) {
+      s.y = f - t.height;
+      s.vy = 0;
+      return true;
     }
   } else if (s.vy < 0) {
     const ty = first(s.y);
-    for (let tx = tx0; tx <= tx1; tx++) {
+    for (let tx = first(s.x), tx1 = last(s.x, t.width); tx <= tx1; tx++) {
       if (TILE_FLAGS[tileAt(map, tx, ty)] & FLAG.SOLID) {
         s.y = (ty + 1) * TILE_SIZE;
         s.vy = 0;
@@ -240,6 +271,64 @@ function moveY(s, map, t, down) {
     }
   }
   return false;
+}
+
+/** Whether any solid tile overlaps the rectangle [x, x+w) × [y, y+h). */
+function solidIn(map, x, y, w, h) {
+  for (let ty = first(y), ty1 = last(y, h); ty <= ty1; ty++) {
+    for (let tx = first(x), tx1 = last(x, w); tx <= tx1; tx++) {
+      if (TILE_FLAGS[tileAt(map, tx, ty)] & FLAG.SOLID) return true;
+    }
+  }
+  return false;
+}
+
+/** Ground height (world y) of a ramp tile at pixel column px, clamped to the tile. */
+function slopeY(f, tx, ty, px) {
+  const lx = Math.min(TILE_SIZE, Math.max(0, px - tx * TILE_SIZE));
+  return (f & FLAG.SLOPE_R) ? (ty + 1) * TILE_SIZE - lx : ty * TILE_SIZE + lx;
+}
+
+/**
+ * Highest walkable surface (smallest y) under the box's bottom edge [x, x+w)
+ * with y in [yMin, yMax], or Infinity. Solid tops, ramp surfaces, and one-way
+ * tops at or below `oneWayFrom` (unless down is held).
+ */
+function floorBetween(map, x, w, yMin, yMax, down, oneWayFrom) {
+  let best = Infinity;
+  const tx0 = first(x), tx1 = last(x, w);
+  const ty0 = Math.floor(yMin / TILE_SIZE), ty1 = Math.floor(yMax / TILE_SIZE);
+  for (let ty = ty0; ty <= ty1; ty++) {
+    for (let tx = tx0; tx <= tx1; tx++) {
+      const f = TILE_FLAGS[tileAt(map, tx, ty)];
+      let top;
+      if (f & FLAG.SOLID) top = ty * TILE_SIZE;
+      else if (f & FLAG.SLOPE_R) top = slopeY(f, tx, ty, Math.min(x + w, (tx + 1) * TILE_SIZE)); // highest at the right
+      else if (f & FLAG.SLOPE_L) top = slopeY(f, tx, ty, Math.max(x, tx * TILE_SIZE)); // highest at the left
+      else if ((f & FLAG.ONE_WAY) && !down && ty * TILE_SIZE >= oneWayFrom) top = ty * TILE_SIZE;
+      else continue;
+      if (top >= yMin && top <= yMax && top < best) best = top;
+    }
+  }
+  return best;
+}
+
+/**
+ * Where to draw feet at pixel column px when the box bottom is at `bottom`: the
+ * ramp surface under that column if there is one nearby, else `bottom`. Physics
+ * rests the box on the highest ramp point under it, so on a ramp the centre of the
+ * box floats up to half its width above the surface. This is for rendering only.
+ */
+export function feetY(map, px, bottom) {
+  const tx = Math.floor(px / TILE_SIZE);
+  for (let ty = Math.floor((bottom - 1) / TILE_SIZE); ty <= Math.floor((bottom + TILE_SIZE / 2) / TILE_SIZE); ty++) {
+    const f = TILE_FLAGS[tileAt(map, tx, ty)];
+    if (f & SLOPE) {
+      const y = slopeY(f, tx, ty, px);
+      if (y >= bottom - 1 && y <= bottom + TILE_SIZE / 2) return y;
+    }
+  }
+  return bottom;
 }
 
 /** -1 / 1 if a solid wall is directly against the left / right side, else 0. */

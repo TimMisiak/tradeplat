@@ -1,6 +1,6 @@
 // How a player is drawn: animation state from physics state, and sprite or
 // flat-color fallback instances. Used for the local player now, and for ghosts in M3.
-import { TUNING } from '../shared/physics.js';
+import { TUNING, feetY } from '../shared/physics.js';
 
 /** Which animation fits this physics state. Names match SPRITE_SPEC.player (ART.md). */
 export function animFor(p) {
@@ -30,10 +30,12 @@ export function createAnimator() {
  * @param {{anim: string, t: number}} anim
  * @param {{player: number[], outline: number[]}} colors
  * @param {import('./assets.js').LoadedSprite | undefined} sprite
+ * @param {import('../shared/tiles.js').TileMap} map for putting feet on ramps
  */
-export function drawPlayer(batch, pos, p, anim, colors, sprite, tuning = TUNING) {
+export function drawPlayer(batch, pos, p, anim, colors, sprite, map, tuning = TUNING) {
   const footX = pos.x + tuning.width / 2;
-  const footY = pos.y + tuning.height;
+  // On a ramp the hitbox rests on its highest corner. Draw the feet on the surface under the centre.
+  const footY = p.onGround ? feetY(map, footX, pos.y + tuning.height) : pos.y + tuning.height;
   // Face the wall while sliding. The art has the wall on the right.
   const facing = anim.anim === 'wallSlide' ? p.wallDir : p.facing;
 
@@ -52,6 +54,7 @@ export function drawPlayer(batch, pos, p, anim, colors, sprite, tuning = TUNING)
 
   // Flat-color fallback: outlined hitbox with an "eye" on the facing side.
   const { width: w, height: h } = tuning;
+  pos = { x: pos.x, y: footY - h };
   batch.push(pos.x - 1, pos.y - 1, w + 2, h + 2, colors.outline);
   batch.push(pos.x, pos.y, w, h, colors.player);
   const eyeX = facing > 0 ? pos.x + w - 4 : pos.x + 2;

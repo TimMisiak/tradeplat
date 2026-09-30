@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ENVELOPE, GEN_VERSION, floodFill, generateWorld } from '../shared/worldgen.js';
+import { ENVELOPE, GEN_VERSION, floodFill, generateWorld, rampify } from '../shared/worldgen.js';
 import { createRng } from '../shared/rng.js';
 import { fbm, noise1, noise2 } from '../shared/noise.js';
 import { INPUT, createPlayer, step } from '../shared/physics.js';
@@ -8,7 +8,7 @@ import { FLAG, TILE, TILE_FLAGS, TILE_SIZE, parseAsciiMap } from '../shared/tile
 
 // Update ONLY for intentional generator changes, together with a GEN_VERSION bump
 // (clients check the hash against the server's). Say so in the commit.
-const GOLDEN = { seed: 1, genVersion: 1, hash: '08ff870b' };
+const GOLDEN = { seed: 1, genVersion: 2, hash: '736b157e' };
 
 test('golden hash: generator output for a fixed seed is unchanged', () => {
   const w = generateWorld(GOLDEN.seed);
@@ -121,4 +121,48 @@ test('noise stays in [0, 1)', () => {
     const x = i * 0.37 - 900, y = i * 0.13 - 300;
     for (const v of [noise1(x, 3), noise2(x, y, 3), fbm(noise2, x, y, 3, 4)]) assert.ok(v >= 0 && v < 1, `${v}`);
   }
+});
+
+test('rampify turns a staircase into ramps you can run up and down', () => {
+  const map = parseAsciiMap([
+    '....................',
+    '....................',
+    '....................',
+    '....................',
+    '..........###.......',
+    '.........#####......',
+    '........#######.....',
+    '.@.....#########....',
+    '####################',
+  ]);
+  const placed = rampify(map);
+  assert.equal(placed, 8, 'four steps up, four down');
+  const s = map.markers['@'][0];
+  let p = createPlayer((s.tx + 0.5) * TILE_SIZE, (s.ty + 1) * TILE_SIZE);
+  for (let i = 0; i < 10; i++) p = step(p, 0, map);
+  let top = p.y;
+  for (let i = 0; i < 200 && p.x < 18 * TILE_SIZE; i++) {
+    p = step(p, INPUT.RIGHT, map);
+    assert.equal(p.onGround, true, `airborne at x=${p.x.toFixed(1)}`);
+    top = Math.min(top, p.y);
+  }
+  assert.ok(p.x >= 18 * TILE_SIZE);
+  assert.equal(top + 18, 4 * TILE_SIZE, 'went over the top');
+});
+
+test('rampify leaves 1-wide bumps and low-headroom steps alone', () => {
+  const map = parseAsciiMap([
+    '..............',
+    '.......#......',
+    '..............',
+    '....#..######.',
+    '##############',
+  ]);
+  // (4,3) is a 1-wide bump: no ground continues past it, so it can't be one ramp.
+  // (7,3) is a proper step, but the block at (7,1) leaves only one open row above it.
+  assert.equal(rampify(map), 0);
+  // Without that block, the step becomes a ramp.
+  map.tiles[1 * map.w + 7] = TILE.empty;
+  assert.equal(rampify(map), 1);
+  assert.equal(map.tiles[3 * map.w + 7], TILE.slopeR);
 });

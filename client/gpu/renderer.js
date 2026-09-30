@@ -157,7 +157,7 @@ export async function createRenderer(canvas) {
    * @param {TileStyle[]} styles indexed by tile id
    *
    * @typedef {{fill: number[], edge?: number[], shape?: number, edgeWidth?: number, solid?: boolean,
-   *   art?: {layer: number, autotile: boolean}}} TileStyle
+   *   mirror?: boolean, art?: {layer: number, autotile: boolean}}} TileStyle
    */
   function setMap(map, styles) {
     tileTex?.destroy();
@@ -184,6 +184,7 @@ export async function createRenderer(canvas) {
       styleData[o + 10] = s.art ? s.art.layer : -1;
       styleData[o + 11] = s.art?.autotile ? 1 : 0;
       styleData[o + 12] = s.solid ? 1 : 0;
+      styleData[o + 13] = s.mirror ? 1 : 0;
     });
     device.queue.writeBuffer(styleBuf, 0, styleData);
     rebuildTileBindGroup();

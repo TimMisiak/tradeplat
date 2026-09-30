@@ -21,9 +21,9 @@ ${VIEW_STRUCT}
 struct TileStyle {
   fill: vec4f,     // flat color
   edge: vec4f,     // flat color for exposed edges (a = 0 → no edge)
-  params: vec4f,   // x: shape (0 block, 1 top strip, 2 spikes), y: edge width px,
+  params: vec4f,   // x: shape (0 block, 1 top strip, 2 spikes, 3 ramp), y: edge width px,
                    // z: first art layer (-1 = no art), w: 1 if the art is a cardinal4 strip
-  flags: vec4f,    // x: 1 if solid (spikes attach to solid neighbours)
+  flags: vec4f,    // x: 1 if solid for joins and spike attachment, y: 1 to mirror (slopeL)
 };
 @group(0) @binding(0) var<uniform> view: View;
 @group(0) @binding(1) var<uniform> styles: array<TileStyle, 16>;
@@ -79,6 +79,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
   let st = styles[min(id, 15u)];
   let shape = u32(st.params.x);
   if (shape == 2u) { local = spikeLocal(t, local); }
+  if (st.flags.y > 0.5) { local.x = 15.0 - local.x; } // '\\' is '/' mirrored
 
   // Joined neighbours, N=1 E=2 S=4 W=8 (the cardinal4 layout in ART.md). A neighbour
   // joins if it's the same tile, or if both are solid (terrain under a post floor
@@ -100,6 +101,12 @@ fn fs(in: VsOut) -> @location(0) vec4f {
   if (shape == 1u) { // one-way platform: a 4 px strip on top
     if (local.y >= 4.0) { return sky; }
     if (local.y < 1.0) { return st.edge; }
+    return st.fill;
+  }
+  if (shape == 3u) { // ramp '/': solid below the diagonal, with an edge along it
+    let surface = 15.0 - local.x;
+    if (local.y < surface) { return sky; }
+    if (local.y < surface + st.params.y) { return st.edge; }
     return st.fill;
   }
   if (shape == 2u) { // spikes: two teeth, pointing away from the base

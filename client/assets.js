@@ -21,6 +21,8 @@ export const TILE_SPEC = Object.freeze({
   oneWay: { autotile: null, note: 'thin platform; the top 4 px read as the standing surface' },
   postFloor: { autotile: 'cardinal4', note: 'trade post floor' },
   postWall: { autotile: 'cardinal4', note: 'trade post walls and roof' },
+  slopeR: { autotile: null, note: "45° ramp rising to the right ('/'). Also used mirrored for slopeL" },
+  slopeL: { autotile: null, note: "optional: '\\' ramp, if the mirrored slopeR art doesn't suit" },
 });
 
 /**

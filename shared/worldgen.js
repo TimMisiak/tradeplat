@@ -6,9 +6,9 @@
 // Bump GEN_VERSION whenever the output for a given seed changes.
 import { createRng, hashString } from './rng.js';
 import { fbm, noise1, noise2 } from './noise.js';
-import { FLAG, TILE, TILE_FLAGS, createMap } from './tiles.js';
+import { FLAG, SLOPE, TILE, TILE_FLAGS, createMap } from './tiles.js';
 
-export const GEN_VERSION = 1;
+export const GEN_VERSION = 2;
 export const WORLD_W = 1024;
 export const WORLD_H = 256;
 
@@ -21,6 +21,9 @@ export const ENVELOPE = Object.freeze({
   stepUp: 3, // platforms stacked at most this many rows apart
   gap: 4, // at most this many tiles of horizontal travel without support
 });
+
+/** A route runs diagonally (on ramps) until it lags its target height by more than this; then it goes vertical. */
+const ROUTE_MAX_LAG = 4;
 
 // Post prefab (tiles)
 const POST_W = 14;
@@ -45,7 +48,7 @@ const MAX_REPAIR_ROUNDS = 3;
  * @typedef {import('./tiles.js').TileMap & {
  *   version: number, seed: number, attempt: number,
  *   posts: Post[], spawnPost: number, spawners: object[], hash: string,
- *   stats: {tunnels: number, platforms: number, reachable: number, ms?: number},
+ *   stats: {tunnels: number, platforms: number, ramps: number, reachable: number},
  *   debug: {routes: [number, number][][], edges: [number, number][]},
  * }} World
  */
@@ -78,10 +81,16 @@ function tryGenerate(seed, w, h) {
   const rng = createRng(seed);
   const map = createMap(w, h);
   const surface = terrain(map, rng.fork('terrain'));
-  const posts = placePosts(map, rng.fork('posts'), surface);
+  const posts = planPosts(rng.fork('posts'), surface, h);
   if (posts.length < 2) return { ok: false, error: 'too few posts' };
+  // Surface posts sit on flattened ground. Ramp the terrain into those flats, then paint it.
+  const locked = new Uint8Array(w);
+  for (const p of posts) if (p.kind === 'surface') locked.fill(1, p.x - POST_PAD - 1, p.x + p.w + POST_PAD + 1);
+  relaxSurface(surface, locked);
+  paintSurface(map, surface);
+  for (const p of posts) stampPost(map, p);
   const { routes, edges } = carveRoutes(map, rng.fork('routes'), posts);
-  const stats = { tunnels: 0, platforms: 0, reachable: 0 };
+  const stats = { tunnels: 0, platforms: 0, ramps: 0, reachable: 0 };
   stats.platforms += addPlatforms(map, routes);
 
   // Reachability v1: flood fill from the spawn post, repairing with tunnels.
@@ -102,6 +111,8 @@ function tryGenerate(seed, w, h) {
     }
   }
 
+  // Every 1-tile floor step (terrain, routes, caves, tunnels) becomes a ramp.
+  stats.ramps = rampify(map);
   for (const p of posts) delete p.isSpawn;
   return {
     ok: true,
@@ -130,6 +141,17 @@ function get(map, x, y) {
 function fillRect(map, x0, y0, x1, y1, id) {
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(map, x, y, id);
 }
+/**
+ * Carve the space a path point needs: its column from the feet row up 3 rows,
+ * and 3 rows of headroom in the next column. The next column's feet row is left
+ * for the next point to decide, so on a diagonal each column's floor sits right
+ * under its own point (1-tile steps that rampify turns into ramps).
+ */
+function brush(map, x, y) {
+  for (let dy = -3; dy <= 0; dy++) carve(map, x, y + dy);
+  for (let dy = -3; dy <= -1; dy++) carve(map, x + 1, y + dy);
+}
+
 /** Clear to empty, leaving trade post tiles alone. */
 function carve(map, x, y) {
   if (!inside(map, x, y)) return;
@@ -140,22 +162,22 @@ const isSolid = (map, x, y) => (TILE_FLAGS[get(map, x, y)] & FLAG.SOLID) !== 0;
 
 // Stage 1: terrain
 
-/** Returns the surface row for each column. */
+/**
+ * Noise terrain: surface heights, caves and islands. Returns the surface row (top
+ * solid tile) of each column. The surface itself is painted later by paintSurface,
+ * once posts have flattened their ground.
+ */
 function terrain(map, rng) {
   const { w, h } = map;
   const sSurface = rng.u32(), sCave = rng.u32(), sIsland = rng.u32();
 
-  // Surface height: rolling hills from 1D noise, terraced so that height only changes
-  // in cliffs of ENVELOPE.stepUp rows. A smooth slope would become a staircase of
-  // 1-tile steps, each needing its own jump.
+  // Surface height: rolling hills from 1D noise, changing by at most one row per
+  // column so every change can be a 45° ramp.
   const surface = new Int32Array(w);
-  let level = 0;
   for (let x = 0; x < w; x++) {
     const n = fbm(noise1, x / 64, 0, sSurface, 4);
     const raw = Math.max(40, Math.min(h - 70, Math.round(h * 0.38 + (n - 0.5) * 90)));
-    if (x === 0) level = raw;
-    else if (Math.abs(raw - level) >= ENVELOPE.stepUp) level += raw > level ? ENVELOPE.stepUp : -ENVELOPE.stepUp;
-    surface[x] = level;
+    surface[x] = x === 0 ? raw : surface[x - 1] + Math.sign(raw - surface[x - 1]);
   }
 
   for (let y = 0; y < h; y++) {
@@ -178,20 +200,50 @@ function terrain(map, rng) {
 
   // Cellular-automaton smoothing removes single-tile noise from caves and islands.
   for (let pass = 0; pass < 2; pass++) smooth(map);
+  return surface;
+}
 
-  // Then lay the terraced surface back over it: a solid crust, with clear air above,
-  // so the smoothing doesn't round the terraces back into 1-tile steps.
+/**
+ * Make neighbouring columns differ by at most one row (so a ramp fits), keeping
+ * `locked` columns (post flats) fixed. Then remove 1-wide peaks, which rampify
+ * leaves as blocks (one tile can't be both '/' and '\\').
+ */
+function relaxSurface(surface, locked) {
+  const w = surface.length;
+  for (let iter = 0; iter < 32; iter++) {
+    let changed = false;
+    for (let x = 1; x < w; x++) {
+      if (locked[x]) continue;
+      const v = Math.max(surface[x - 1] - 1, Math.min(surface[x - 1] + 1, surface[x]));
+      if (v !== surface[x]) { surface[x] = v; changed = true; }
+    }
+    for (let x = w - 2; x >= 0; x--) {
+      if (locked[x]) continue;
+      const v = Math.max(surface[x + 1] - 1, Math.min(surface[x + 1] + 1, surface[x]));
+      if (v !== surface[x]) { surface[x] = v; changed = true; }
+    }
+    if (!changed) break;
+  }
+  for (let x = 1; x < w - 1; x++) {
+    if (!locked[x] && surface[x] < surface[x - 1] && surface[x] < surface[x + 1]) surface[x]++;
+  }
+}
+
+/**
+ * Paint the surface over the noise terrain: 14 rows of clear air above and a 5-row
+ * solid crust. Height changes are single-row steps here; rampify turns them into ramps.
+ */
+function paintSurface(map, surface) {
+  const { w, h } = map;
   for (let x = 0; x < w; x++) {
     const s = surface[x];
     fillRect(map, x, s - 14, x, s - 1, TILE.empty);
     fillRect(map, x, s, x, s + 4, TILE.solid);
   }
-
   // Bedrock frame: walls at the sides, floor at the bottom.
   fillRect(map, 0, 0, 1, h - 1, TILE.solid);
   fillRect(map, w - 2, 0, w - 1, h - 1, TILE.solid);
   fillRect(map, 0, h - 3, w - 1, h - 1, TILE.solid);
-  return surface;
 }
 
 function smooth(map) {
@@ -217,8 +269,9 @@ function smooth(map) {
 const NAME_START = ['Rust', 'Sky', 'Salt', 'Iron', 'Ash', 'Cinder', 'Moss', 'Brine', 'Copper', 'Dusk', 'Hollow', 'Stone', 'Ember', 'Frost', 'Gale', 'Thorn'];
 const NAME_END = ['mouth', 'hold', 'reach', 'haven', 'gate', 'rest', 'mark', 'post', 'fall', 'crag', 'well', 'deep', 'watch', 'ford'];
 
-function placePosts(map, rng, surface) {
-  const { w, h } = map;
+/** Decide where posts go. Surface posts flatten `surface` under their footprint. */
+function planPosts(rng, surface, h) {
+  const w = surface.length;
   const count = rng.int(8, 12);
   const margin = 40;
   const slot = (w - margin * 2) / count;
@@ -239,26 +292,19 @@ function placePosts(map, rng, surface) {
     let floor;
     if (kind === 'sky' && top - 30 < 24) kind = 'surface';
     if (kind === 'cave' && surface[cx] + 25 > h - 20) kind = 'surface';
-    if (kind === 'surface') floor = top - 1;
-    else if (kind === 'cave') floor = rng.int(surface[cx] + 25, h - 20);
-    else floor = rng.int(24, top - 30);
-
-    // Clear air around the room, lay the floor with landing platforms, build the shell.
-    fillRect(map, x0 - POST_PAD, floor - POST_H - POST_PAD + 1, x1 + POST_PAD, floor - 1, TILE.empty);
-    fillRect(map, x0 - POST_PAD, floor, x1 + POST_PAD, floor, TILE.postFloor);
-    const roof = floor - POST_H + 1;
-    fillRect(map, x0, roof, x1, roof, TILE.postWall);
-    fillRect(map, x0, roof + 1, x0, roof + 3, TILE.postWall);
-    fillRect(map, x1, roof + 1, x1, roof + 3, TILE.postWall);
     if (kind === 'surface') {
-      // Foundation down to the ground, so the landing platforms aren't floating.
-      for (let x = x0 - POST_PAD; x <= x1 + POST_PAD; x++) fillRect(map, x, floor + 1, x, surface[x] + 1, TILE.solid);
-    }
+      // Flatten the footprint plus one column each side, so ground at floor level
+      // meets the ends of the landing platforms before any ramp starts.
+      floor = surface[cx];
+      for (let x = x0 - POST_PAD - 1; x <= x1 + POST_PAD + 1; x++) surface[x] = floor;
+    } else if (kind === 'cave') floor = rng.int(surface[cx] + 25, h - 20);
+    else floor = rng.int(24, top - 30);
 
     let name;
     do name = rng.pick(NAME_START) + rng.pick(NAME_END); while (names.has(name));
     names.add(name);
 
+    const roof = floor - POST_H + 1;
     posts.push({
       id: i,
       name,
@@ -273,6 +319,17 @@ function placePosts(map, rng, surface) {
     });
   }
   return posts;
+}
+
+/** Clear air around the room, lay the floor with its landing platforms, and build the shell. */
+function stampPost(map, p) {
+  const x0 = p.x, x1 = p.x + p.w - 1;
+  const roof = p.y, floor = p.y + p.h - 1;
+  fillRect(map, x0 - POST_PAD, roof - POST_PAD, x1 + POST_PAD, floor - 1, TILE.empty);
+  fillRect(map, x0 - POST_PAD, floor, x1 + POST_PAD, floor, TILE.postFloor);
+  fillRect(map, x0, roof, x1, roof, TILE.postWall);
+  fillRect(map, x0, roof + 1, x0, roof + 3, TILE.postWall);
+  fillRect(map, x1, roof + 1, x1, roof + 3, TILE.postWall);
 }
 
 // Stage 4: routes
@@ -310,53 +367,91 @@ function carveRoutes(map, rng, posts) {
   const edges = routeEdges(rng, posts);
   const routes = [];
   for (const [ia, ib] of edges) {
-    // Leave from the facing doors.
+    // Leave and arrive just past the ends of the landing platforms, at floor level,
+    // so a route never runs into a platform from below.
     const [a, b] = posts[ia].spawn.tx <= posts[ib].spawn.tx ? [posts[ia], posts[ib]] : [posts[ib], posts[ia]];
-    const start = a.doors[1], end = b.doors[0];
+    const start = { tx: a.x + a.w + POST_PAD, ty: a.spawn.ty };
+    const end = { tx: b.x - POST_PAD - 1, ty: b.spawn.ty };
     const path = meander(rng, start, end, map.h);
-    for (const [x, y] of path) {
-      // Brush: 2 wide, 4 tall (feet row + 3 rows of headroom).
-      for (let dy = -3; dy <= 0; dy++) { carve(map, x, y + dy); carve(map, x + 1, y + dy); }
-    }
+    for (const [x, y] of path) brush(map, x, y);
     routes.push(path);
   }
   return { routes, edges };
 }
 
 /**
- * A path from start to end that moves one tile at a time and never goes backwards
- * in x. It follows a noisy curve between the two. Height changes are bunched into
- * vertical runs of at least ENVELOPE.stepUp rows, so slopes become ledges worth a
- * real jump, not a staircase of 1-tile steps you'd have to hop up one at a time.
+ * A path from start to end that never goes backwards in x. It follows a noisy
+ * curve between the two, moving diagonally (one row per column, on ramps laid by
+ * placeRamps) and going straight up or down only when it lags the curve by more
+ * than ROUTE_MAX_LAG rows. Opposite diagonals always have a flat step between
+ * them, since one floor tile can't be both '/' and '\\'.
  */
 function meander(rng, start, end, h) {
   const seed = rng.u32();
   const span = Math.max(1, end.tx - start.tx);
   const amp = Math.min(24, span * 0.25);
+  const wantAt = (x) => {
+    const t = (x - start.tx) / span;
+    const bulge = 4 * t * (1 - t); // 0 at the ends, 1 in the middle
+    const v = Math.round(start.ty + (end.ty - start.ty) * t + (fbm(noise1, x / 24, 0, seed, 2) - 0.5) * 2 * amp * bulge);
+    return Math.max(6, Math.min(h - 6, v));
+  };
   const path = [];
-  let x = start.tx, y = start.ty;
-  let targetY = null; // set while running vertically
+  let x = start.tx, y = start.ty, lastDy = 0;
   path.push([x, y]);
-  while (x < end.tx || y !== end.ty) {
-    if (targetY === null) {
-      let want = end.ty;
-      if (x < end.tx) {
-        const t = (x - start.tx) / span;
-        const bulge = 4 * t * (1 - t); // 0 at the ends, 1 in the middle
-        want = Math.round(start.ty + (end.ty - start.ty) * t + (fbm(noise1, x / 24, 0, seed, 2) - 0.5) * 2 * amp * bulge);
-        want = Math.max(6, Math.min(h - 6, want));
-      }
-      if (Math.abs(want - y) >= ENVELOPE.stepUp || (x >= end.tx && want !== y)) targetY = want;
+  while (x < end.tx) {
+    const want = wantAt(x + 1);
+    if (Math.abs(want - y) > ROUTE_MAX_LAG) {
+      // Too steep for ramps: go straight to within a row of the curve.
+      while (Math.abs(want - y) > 1) { y += Math.sign(want - y); path.push([x, y]); }
+      lastDy = 0;
     }
-    if (targetY !== null && y !== targetY) {
-      y += y < targetY ? 1 : -1;
-    } else {
-      targetY = null;
-      x++;
-    }
+    let dy = Math.sign(want - y);
+    if (dy !== 0 && dy === -lastDy) dy = 0;
+    x++;
+    y += dy;
+    lastDy = dy;
     path.push([x, y]);
   }
+  while (y !== end.ty) { y += Math.sign(end.ty - y); path.push([x, y]); }
   return path;
+}
+
+/**
+ * Turn every 1-tile floor step into a 45° ramp. A step up to the right at column c
+ * and feet row y looks like this (and mirrored for a step up to the left):
+ *
+ *     . . .      y-2   headroom over the ramp (the player is taller than a tile)
+ *     . . .      y-1
+ *     . # #      y     c becomes '/'; c+1 must be solid, so the ground continues
+ *     # # #      y+1
+ *    c-1 c c+1
+ *
+ * Only plain `solid` tiles become ramps, never post tiles. Conditions are read
+ * from a snapshot, so ramps placed in this pass don't affect each other.
+ * Returns the number of ramps placed.
+ */
+export function rampify(map) {
+  const { w, h } = map;
+  const snap = new Uint8Array(map.tiles);
+  const at = (x, y) => (x < 0 || y < 0 || x >= w || y >= h ? TILE.solid : snap[y * w + x]);
+  const solid = (x, y) => (TILE_FLAGS[at(x, y)] & FLAG.SOLID) !== 0;
+  const open = (x, y) => (TILE_FLAGS[at(x, y)] & (FLAG.SOLID | SLOPE)) === 0;
+  let placed = 0;
+  for (let y = 3; y < h - 1; y++) {
+    for (let x = 3; x < w - 3; x++) {
+      if (at(x, y) !== TILE.solid || !open(x, y - 1) || !open(x, y - 2)) continue;
+      // Step up to the right: stand at x-1, the ground continues at x+1.
+      if (open(x - 1, y) && open(x - 1, y - 1) && solid(x - 1, y + 1) && solid(x + 1, y)) {
+        map.tiles[y * w + x] = TILE.slopeR;
+        placed++;
+      } else if (open(x + 1, y) && open(x + 1, y - 1) && solid(x + 1, y + 1) && solid(x - 1, y)) {
+        map.tiles[y * w + x] = TILE.slopeL;
+        placed++;
+      }
+    }
+  }
+  return placed;
 }
 
 /**
@@ -368,7 +463,7 @@ function addPlatforms(map, paths) {
   const supported = (x, y) => {
     for (let dy = 1; dy <= 2; dy++) {
       const f = TILE_FLAGS[get(map, x, y + dy)] | TILE_FLAGS[get(map, x + 1, y + dy)];
-      if (f & (FLAG.SOLID | FLAG.ONE_WAY)) return true;
+      if (f & (FLAG.SOLID | FLAG.ONE_WAY | SLOPE)) return true;
     }
     return false;
   };
@@ -441,9 +536,7 @@ function carveTunnel(map, visited, to) {
   path.push([x, y]);
   while (y !== to.ty) { y += y < to.ty ? 1 : -1; path.push([x, y]); }
   while (x !== to.tx) { x += x < to.tx ? 1 : -1; path.push([x, y]); }
-  for (const [px, py] of path) {
-    for (let dy = -3; dy <= 0; dy++) { carve(map, px, py + dy); carve(map, px + 1, py + dy); }
-  }
+  for (const [px, py] of path) brush(map, px, py);
   return path;
 }
 
