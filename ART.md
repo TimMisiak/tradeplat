@@ -136,13 +136,46 @@ These are 16×16 icons for the trade menu, one per good in `shared/goods.js`: `w
 
 ## Status
 
+Asset progress below reflects the exported files in `client/assets/manifest.json`.
+Art completion is separate from renderer/gameplay implementation.
+
 | Area | State |
 |---|---|
-| Palette | placeholder values in the manifest (the flat-color fallback uses them) |
-| Tiles | none yet |
-| Sprites | none yet |
-| Goods icons | none yet |
+| Palette | Initial manifest palette in use by the player art and flat-color fallback; broader art direction still open |
+| Player — required animations | **Done and reviewed:** `idle`, `run`, `jump`, `fall`, `wallSlide`; exported and registered in the manifest |
+| Player — optional animations | Not started: `land`, `death` |
+| Tiles | Not started: `solid`, `spike`, `oneWay`, `postFloor`, `postWall` |
+| Enemies and hazards | Not started: patroller `walk`, flyer `fly`, saw `spin`; optional patroller `stomped` also outstanding |
+| Effects | Not started: dust `puff`, splat `burst` and `stain` |
+| Post sign | Not started: postSign `idle` |
+| Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
 | Renderer support | M0: none. Tiles from M2, sprites as each entity lands (player M1, enemies and fx M5), icons M4 |
+
+### Completed player art
+
+The approved design is a simple, cartoony courier with an ivory hood, blue scarf,
+and brown backpack. Run, jump, and fall use short, slim, undetailed arms. Fall and
+wall-slide animate a subtle one-pixel backpack shift instead of a trailing blue
+scarf behind the player.
+
+All frames are native 24×24 pixels, face right, and use the (12,24) foot anchor,
+manifest palette, and hard transparency.
+
+| Animation | Frames | FPS | Loop |
+|---|---|---|---|
+| `idle` | 4 | 6 | yes |
+| `run` | 6 | 12 | yes |
+| `jump` | 2 | 10 | no |
+| `fall` | 2 | 8 | yes |
+| `wallSlide` | 2 | 8 | yes |
+
+Runtime sheets are in [client/assets/sprites/player/](client/assets/sprites/player/).
+Editable Python/Pillow sources and enlarged/animated review previews are in
+[art/player/](art/player/); see its [README](art/player/README.md) for regeneration.
+The completed set passes `npm run test:assets` without missing-animation warnings.
+
+Update this status section as each asset set is completed. Unspecified art work
+such as backdrops and player color variants remains under Open questions below.
 
 ## Open questions
 
