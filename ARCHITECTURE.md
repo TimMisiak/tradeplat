@@ -41,12 +41,15 @@ shared/
   goods.js              # goods catalog
   protocol.js           # message type constants, encode/decode helpers
   mathdet.js            # deterministic sin/cos (see Determinism)
+  maps/test.js          # hand-written M1 test level (ASCII)
 client/
   index.html            # <canvas>, import map, one <script type="module">
   main.js               # boot, main loop, fixed-step accumulator
   input.js              # keyboard (+ gamepad later) → input bitmask
   net.js                # ws client, clock sync, reconciliation, ghost buffers
   camera.js             # follow, look-ahead, pixel snapping, bounds
+  player-view.js        # physics state → animation + sprite (or flat fallback) instances
+  dev/tuning.js         # dev-only DOM tuning panel (` key), see DESIGN.md § Movement feel
   assets.js             # asset spec + manifest validator (+ runtime loader later), see ART.md
   assets/               # exported art: manifest.json, tiles/, sprites/, icons/ (ART.md)
   gpu/renderer.js       # device setup, tile pass, sprite pass
@@ -82,7 +85,7 @@ Client prediction and client-side world generation both depend on client and ser
 ## Netcode
 
 ### Connection
-1. The client opens `ws(s)://host/ws` and sends `hello {name}`.
+1. The client opens `ws(s)://host/ws` and sends `hello {name}`. The scheme and host always come from `location` (`wss:` on an `https:` page), because the game is served over HTTPS behind a TLS-terminating proxy, and WebGPU needs a secure context anyway. The server itself speaks plain HTTP/WS and never builds absolute URLs.
 2. The server replies `welcome {playerId, seed, genVersion, serverTick, tuningHash, posts, marketSnapshot}`.
 3. The client **regenerates the map from the seed** ([WORLDGEN.md](WORLDGEN.md#determinism)) and checks that its own map hash and tuning hash match the server's. If either doesn't match, it shows an error and refuses to play, because prediction would be wrong.
 
@@ -172,8 +175,8 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 | Milestone | Scope in this doc | State |
 |---|---|---|
 | M0 | layout, static server, hello/welcome + ping/pong, 60 Hz tick clock, WebGPU letterboxed clear, asset manifest + viewer, `npm test` | **done** 2026-09-30 |
-| M1 | `physics.js` step + tuning, fixed-step client loop, sprite pass | not started |
-| M2 | tile pass, camera | not started |
+| M1 | `physics.js` step + tuning, fixed-step client loop with interpolation, sprite pass + runtime sprite atlas, input (keyboard + gamepad), follow camera, dev tuning panel. The **tile pass landed here too** (flat palette colors with exposed-edge shading). Tile art is M2 | **done** 2026-09-30 |
+| M2 | tile art (texture array + cardinal4 masks) in the tile pass, camera on the full-size generated map | not started |
 | M3 | netcode: clock sync, prediction/reconciliation, ghosts, interest sets | not started |
 | M4 | trade messages, text atlas, trade UI | not started |
 | M6+ | persistence snapshots, binary protocol (if the bench says so), PvP netcode | not started |

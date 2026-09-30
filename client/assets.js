@@ -1,7 +1,7 @@
-// Asset manifest: the spec for what the game expects, and a validator.
-// See ART.md. This module is pure (no DOM, no Node APIs), so the Node test
-// (test/assets.test.js) and the in-browser viewer (tools/assets.html) share it.
-// The runtime asset loader will live here too (M1/M2).
+// Asset manifest: the spec for what the game expects, a validator, and the runtime loader.
+// See ART.md. The spec and validateManifest are pure (no DOM, no Node APIs), so the Node
+// test (test/assets.test.js) and the in-browser viewer (tools/assets.html) share them.
+// The runtime loader (loadManifest, loadSpriteAtlas) at the bottom is browser-only.
 import { TILES } from '../shared/tiles.js';
 import { GOODS } from '../shared/goods.js';
 
@@ -151,4 +151,103 @@ export async function validateManifest(m, readSize) {
   }
 
   return { errors, warnings, files };
+}
+
+// Runtime loading (browser only). The functions above stay pure for the Node test.
+
+/** "#rrggbb" → [r, g, b, 1] in 0..1. */
+export function hexToRgba(hex, alpha = 1) {
+  const n = parseInt(hex.slice(1), 16);
+  return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, alpha];
+}
+
+/** Fetch and parse client/assets/manifest.json. Returns null if it's unavailable. */
+export async function loadManifest(base = new URL('./assets/', import.meta.url)) {
+  try {
+    const res = await fetch(new URL('manifest.json', base));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (err) {
+    console.warn('[assets] manifest unavailable, using built-in colors:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Load every sprite whose REQUIRED animations are all present and readable, and
+ * pack their strips into one atlas texture (simple shelf packing). Sprites with
+ * missing art are left out, so the game keeps drawing their flat-color fallback.
+ * @param {GPUDevice} device
+ * @param {any} manifest
+ * @returns {Promise<{texture: GPUTexture | null, sprites: Record<string, LoadedSprite>}>}
+ *
+ * @typedef {{frame: [number, number], anchor: [number, number],
+ *   anims: Record<string, {frames: [number, number, number, number][], fps: number, loop: boolean}>}} LoadedSprite
+ *   frames are atlas texel rects [u0, v0, u1, v1]
+ */
+export async function loadSpriteAtlas(device, manifest, base = new URL('./assets/', import.meta.url)) {
+  const wanted = [];
+  for (const [name, s] of Object.entries(manifest?.sprites ?? {})) {
+    const spec = SPRITE_SPEC[name];
+    if (!spec || !s?.anims) continue;
+    if (!spec.required.every((a) => a in s.anims)) continue;
+    wanted.push([name, s]);
+  }
+  if (wanted.length === 0) return { texture: null, sprites: {} };
+
+  const load = async (file) => {
+    try {
+      const res = await fetch(new URL(file, base));
+      if (!res.ok) return null;
+      return await createImageBitmap(await res.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+    } catch {
+      return null;
+    }
+  };
+
+  // Load every strip, and drop a sprite whose required strips fail.
+  const strips = []; // {name, anim, bitmap, def}
+  for (const [name, s] of wanted) {
+    const loaded = await Promise.all(Object.entries(s.anims).map(async ([anim, a]) => ({ name, anim, def: a, bitmap: await load(a.file) })));
+    const ok = SPRITE_SPEC[name].required.every((r) => loaded.find((l) => l.anim === r)?.bitmap);
+    if (ok) strips.push(...loaded.filter((l) => l.bitmap));
+    else console.warn(`[assets] sprite ${name}: a required strip failed to load, using the flat-color fallback`);
+  }
+  if (strips.length === 0) return { texture: null, sprites: {} };
+
+  // Shelf pack: tallest first, rows across a fixed width. 1 px gutter against bleeding.
+  const ATLAS_W = 1024;
+  const GUTTER = 1;
+  strips.sort((a, b) => b.bitmap.height - a.bitmap.height);
+  let x = 0, y = 0, rowH = 0;
+  for (const s of strips) {
+    if (s.bitmap.width > ATLAS_W) throw new Error(`[assets] ${s.name}.${s.anim} is wider than the ${ATLAS_W}px atlas`);
+    if (x + s.bitmap.width > ATLAS_W) { x = 0; y += rowH + GUTTER; rowH = 0; }
+    s.x = x; s.y = y;
+    x += s.bitmap.width + GUTTER;
+    rowH = Math.max(rowH, s.bitmap.height);
+  }
+  const atlasH = y + rowH;
+
+  const texture = device.createTexture({
+    label: 'sprite atlas',
+    size: [ATLAS_W, atlasH],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  const sprites = {};
+  for (const s of strips) {
+    device.queue.copyExternalImageToTexture({ source: s.bitmap }, { texture, origin: [s.x, s.y] }, [s.bitmap.width, s.bitmap.height]);
+    const def = manifest.sprites[s.name];
+    const [fw, fh] = def.frame;
+    const sprite = (sprites[s.name] ??= { frame: [fw, fh], anchor: def.anchor, anims: {} });
+    sprite.anims[s.anim] = {
+      fps: s.def.fps,
+      loop: s.def.loop,
+      frames: Array.from({ length: s.def.frames }, (_, i) => [s.x + i * fw, s.y, s.x + (i + 1) * fw, s.y + fh]),
+    };
+    s.bitmap.close();
+  }
+  console.info(`[assets] sprite atlas ${ATLAS_W}×${atlasH}: ${Object.keys(sprites).join(', ')}`);
+  return { texture, sprites };
 }

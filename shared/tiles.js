@@ -27,3 +27,61 @@ export const TILE = Object.freeze(Object.fromEntries(TILES.map((t, id) => [t.nam
 export const TILE_FLAGS = Uint8Array.from(TILES, (t) => t.flags);
 
 export const TILE_SIZE = 16;
+
+// Maps
+
+/**
+ * A tile map: row-major tile ids, one byte per tile. See WORLDGEN.md § Map.
+ * @typedef {{w: number, h: number, tiles: Uint8Array}} TileMap
+ */
+
+/** @returns {TileMap} */
+export function createMap(w, h) {
+  return { w, h, tiles: new Uint8Array(w * h) };
+}
+
+/** Tile id at (tx, ty). Anything outside the map counts as solid, so the border is implicit bedrock. */
+export function tileAt(map, tx, ty) {
+  if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return TILE.solid;
+  return map.tiles[ty * map.w + tx];
+}
+
+export function flagsAt(map, tx, ty) {
+  return TILE_FLAGS[tileAt(map, tx, ty)];
+}
+
+/** Characters used by hand-written ASCII maps (tests, the M1 test level). */
+export const ASCII_LEGEND = Object.freeze({
+  '.': TILE.empty,
+  ' ': TILE.empty,
+  '#': TILE.solid,
+  '^': TILE.spike,
+  '=': TILE.oneWay,
+  '_': TILE.postFloor,
+  '|': TILE.postWall,
+});
+
+/**
+ * Parse an ASCII map. Rows may differ in length (short rows are padded with empty).
+ * Characters not in the legend are empty tiles, and their positions are returned
+ * as markers (e.g. '@' for the spawn point).
+ * @param {string[]} rows
+ * @returns {TileMap & {markers: Record<string, {tx: number, ty: number}[]>}}
+ */
+export function parseAsciiMap(rows) {
+  const w = Math.max(...rows.map((r) => r.length));
+  const map = createMap(w, rows.length);
+  const markers = {};
+  rows.forEach((row, ty) => {
+    for (let tx = 0; tx < row.length; tx++) {
+      const ch = row[tx];
+      const id = ASCII_LEGEND[ch];
+      if (id !== undefined) {
+        map.tiles[ty * w + tx] = id;
+      } else {
+        (markers[ch] ??= []).push({ tx, ty });
+      }
+    }
+  });
+  return { ...map, markers };
+}

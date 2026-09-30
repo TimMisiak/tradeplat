@@ -28,6 +28,7 @@ Every design decision lives in exactly one doc, and other docs link to it rather
 - **Worldgen output changes → bump `genVersion`** and update the golden hash test.
 - **The server is authoritative** for money, cargo, deaths and prices. The client only predicts its own movement.
 - **State is plain JSON-able data with a `version` field,** with no game state hidden in classes or closures, so persistence can be added later.
+- **HTTPS always works.** The game is tested over https behind a TLS proxy (WebGPU needs a secure context). Build every URL from `location`: `wss:` when the page is `https:`, and no hard-coded `http://`, `ws://`, host or port. Anything added later (asset URLs, APIs) must work under both schemes.
 - **Import `shared/` by relative path** (`../shared/x.js`) so the same file works in the browser and in Node tests.
 - **Art lives in `client/assets/`, listed in `manifest.json`.** Game code looks assets up by the names in `shared/tiles.js`, `shared/goods.js` and `SPRITE_SPEC`, and falls back to flat palette colors when one is missing.
 - **Minimal DOM.** The game is drawn in WebGPU, including its text. Dev tools such as `client/tools/*` may use the DOM.

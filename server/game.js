@@ -1,8 +1,9 @@
 // World instance and fixed-tick loop. See ARCHITECTURE.md § Simulation.
 // M0: only the tick clock. The world, players and market plug in here later.
 import { performance } from 'node:perf_hooks';
+import { TICK_RATE } from '../shared/physics.js';
 
-export const TICK_RATE = 60;
+export { TICK_RATE };
 const TICK_MS = 1000 / TICK_RATE;
 /** Longest catch-up after a stall (e.g. debugger pause) before we drop time instead. */
 const MAX_CATCHUP_TICKS = 30;

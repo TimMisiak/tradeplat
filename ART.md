@@ -142,7 +142,7 @@ These are 16×16 icons for the trade menu, one per good in `shared/goods.js`: `w
 | Tiles | none yet |
 | Sprites | none yet |
 | Goods icons | none yet |
-| Renderer support | M0: none. Tiles from M2, sprites as each entity lands (player M1, enemies and fx M5), icons M4 |
+| Renderer support | **Player sprite: live since M1.** Checked with throwaway test art: the atlas packs it, animations switch with physics state, it's mirrored for facing left, and it's anchored at the feet. Tiles still use flat palette colors with edge shading (tile art is M2). Enemies and fx come in M5, icons in M4 |
 
 ## Open questions
 

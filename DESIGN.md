@@ -36,7 +36,7 @@ The target is Super Meat Boy: fast, precise and forgiving where it matters.
 | Wall jump | Kicks you up and away; input briefly locked away from the wall | ~8 frame lock |
 | Terminal velocity | Caps fall speed so collisions stay readable and stable | ≤ 1 tile/frame |
 
-All of these constants live in a single tuning table in `shared/physics.js`, which both client and server import. M1 includes a debug overlay to tweak them live while tuning.
+All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. **R** respawns (a dev convenience until M5). `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
 
 **Cargo does not affect movement.** A full hold moves the same as an empty one. Cargo is limited only by hold capacity. This is a deliberate choice: the platforming feel never changes, and the risk of carrying cargo comes from what you'd lose, not from worse handling.
 
@@ -90,7 +90,7 @@ Flat-colored tiles and simple sprite quads with a readable palette: terrain is m
 | Area | State |
 |---|---|
 | Core loop | designed |
-| Movement feel | designed; tuning is M1 |
+| Movement feel | built (M1); tuning in progress using the \` panel |
 | Cargo / death | designed; built in M4/M5 |
 | Trade posts / UI | designed; M4 |
 | Enemies v1 | designed; M5 |

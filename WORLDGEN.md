@@ -92,7 +92,7 @@ Because this uses the real step function, it stays correct when the movement tun
 
 | Milestone | Scope | State |
 |---|---|---|
-| M1 | Hand-written test map in the same format (not generated) | not started |
+| M1 | Hand-written test map in the same format (not generated): `shared/maps/test.js` | **done** 2026-09-30 |
 | M2 | rng, noise, pipeline stages 1–4 and 6, map hash, preview tool | not started |
 | M5 | stage 5 (hazards, spawners) | not started |
 | M6+ | reachability v2 | not started |
