@@ -2,7 +2,7 @@
 // prices seen at each post. See DESIGN.md § Trade posts and § Information is part
 // of the game. Nothing here changes money or cargo: orders go to the server, and the
 // wallet shown is always the server's. No DOM, so Node tests drive it directly.
-import { GOOD_BY_ID } from '../../shared/goods.js';
+import { GOODS, GOOD_BY_ID } from '../../shared/goods.js';
 import { SIDE, checkTrade, holdUsed, maxQty } from '../../shared/trade.js';
 import { textWidth } from './text.js';
 
@@ -41,6 +41,24 @@ export function createPriceBook() {
   };
 }
 
+/**
+ * The menu's rows: the post's goods, then any carried good the post doesn't trade
+ * (prices null, shown as "not trading"), in catalog order.
+ * @param {[string, number, number][] | null} goods the post's wire goods list, or null if not seen yet
+ * @param {import('../../shared/trade.js').Wallet | null} wallet
+ * @returns {[string, number | null, number | null][]}
+ */
+export function menuRows(goods, wallet) {
+  // No prices yet: nothing to show, rather than calling everything "not trading".
+  if (!goods) return [];
+  const rows = [...goods];
+  if (!wallet) return rows;
+  for (const { id } of GOODS) {
+    if (wallet.cargo[id] && !rows.some(([g]) => g === id)) rows.push([id, null, null]);
+  }
+  return rows;
+}
+
 /** Wire goods list → {goodId: {sell, buy}} for checkTrade. */
 export function quoteOf(goods) {
   return Object.fromEntries(goods.map(([id, sell, buy]) => [id, { sell, buy }]));
@@ -59,7 +77,7 @@ export function createTradeMenu() {
   return {
     open: false,
     postId: -1,
-    /** Selected row (index into the post's goods). */
+    /** Selected row (index into menuRows()). */
     sel: 0,
     /** Index into QTYS. */
     qty: 0,
@@ -103,7 +121,7 @@ export function closeMenu(menu) {
  *   send: (order: {postId: number, goodId: string, qty: number, side: string}) => number, now: number}} ctx
  */
 export function menuKey(menu, code, ctx) {
-  const n = ctx.goods?.length ?? 0;
+  const n = menuRows(ctx.goods, ctx.wallet).length;
   switch (code) {
     case 'Escape': case 'KeyE': case 'Enter': case 'KeyQ':
       closeMenu(menu);
@@ -134,12 +152,12 @@ export function menuKey(menu, code, ctx) {
 function order(menu, side, ctx) {
   if (menu.pending && ctx.now - menu.pendingAt < PENDING_TIMEOUT_MS) return true;
   menu.pending = 0;
-  const row = ctx.goods?.[menu.sel];
+  const row = menuRows(ctx.goods, ctx.wallet)[menu.sel];
   if (!row || !ctx.wallet) return true;
   const [goodId, sell, buy] = row;
   const qty = orderQty(menu, ctx.wallet, goodId, side, side === SIDE.BUY ? sell : buy);
   // Refusals we can see coming are explained here, without a round trip.
-  const reason = checkTrade(ctx.wallet, { goodId, qty: Math.max(1, qty), side }, quoteOf(ctx.goods));
+  const reason = checkTrade(ctx.wallet, { goodId, qty: Math.max(1, qty), side }, quoteOf(ctx.goods ?? []));
   if (reason) {
     menu.status = { text: `Can't ${side}: ${reason}`, ok: false };
     return true;
@@ -177,7 +195,8 @@ const PW = 344;
 const PX = Math.round((640 - PW) / 2);
 const PY = 40;
 const ROW = 16;
-const COL = { icon: 8, name: 30, size: 136, buy: 190, sell: 240, have: 290 };
+// buy, sell, have and paid are right edges.
+const COL = { icon: 8, name: 30, buy: 172, sell: 222, have: 262, paid: 322 };
 
 /**
  * Draw the open menu.
@@ -190,7 +209,7 @@ const COL = { icon: 8, name: 30, size: 136, buy: 190, sell: 240, have: 290 };
  */
 export function drawTradeMenu(ui, menu, ctx) {
   const { colors: c, wallet } = ctx;
-  const goods = ctx.prices?.goods ?? [];
+  const goods = menuRows(ctx.prices?.goods ?? null, wallet);
   const rowsH = Math.max(1, goods.length) * ROW;
   const h = 34 + rowsH + 8 * ROW + 10;
   const y0 = PY;
@@ -206,10 +225,10 @@ export function drawTradeMenu(ui, menu, ctx) {
   y += ROW + 2;
 
   ui.text(PX + COL.name, y, 'Good', c.dim);
-  ui.textRight(PX + COL.size, y, 'Size', c.dim);
   ui.textRight(PX + COL.buy, y, 'Buy', c.dim);
   ui.textRight(PX + COL.sell, y, 'Sell', c.dim);
-  ui.textRight(PX + COL.have + 30, y, 'Have', c.dim);
+  ui.textRight(PX + COL.have, y, 'Have', c.dim);
+  ui.textRight(PX + COL.paid, y, 'Paid', c.dim);
   y += ROW;
 
   if (!goods.length) {
@@ -223,12 +242,17 @@ export function drawTradeMenu(ui, menu, ctx) {
     ui.icon(PX + COL.icon + 2, ry - 3, id, 16, ctx.iconColor(id));
     const g = GOOD_BY_ID[id];
     ui.text(PX + COL.name, ry, g?.name ?? id, c.text);
-    ui.textRight(PX + COL.size, ry, String(g?.size ?? '?'), c.dim);
-    const canBuy = wallet && maxQty(wallet, id, SIDE.BUY, sell) > 0;
-    ui.textRight(PX + COL.buy, ry, String(sell), canBuy ? c.money : c.dim);
-    ui.textRight(PX + COL.sell, ry, String(buy), c.money);
+    if (sell === null) {
+      ui.textRight(PX + COL.sell, ry, 'not trading', c.dim);
+    } else {
+      const canBuy = wallet && maxQty(wallet, id, SIDE.BUY, sell) > 0;
+      ui.textRight(PX + COL.buy, ry, String(sell), canBuy ? c.money : c.dim);
+      ui.textRight(PX + COL.sell, ry, String(buy), c.money);
+    }
     const have = wallet?.cargo[id] ?? 0;
-    ui.textRight(PX + COL.have + 30, ry, have ? String(have) : '-', have ? c.text : c.dim);
+    ui.textRight(PX + COL.have, ry, have ? String(have) : '-', have ? c.text : c.dim);
+    const paid = wallet?.paid?.[id];
+    ui.textRight(PX + COL.paid, ry, have && paid !== undefined ? String(Math.round(paid)) : '-', have ? c.text : c.dim);
   });
   y += rowsH + 4;
 
@@ -244,7 +268,9 @@ export function drawTradeMenu(ui, menu, ctx) {
 
   // What Z / X would do right now
   const row = goods[menu.sel];
-  if (row && wallet) {
+  if (row && wallet && row[1] === null) {
+    ui.text(PX + 8, y, `${ctx.post.name} doesn't trade ${GOOD_BY_ID[row[0]]?.name ?? row[0]}`, c.dim);
+  } else if (row && wallet) {
     const [id, sell, buy] = row;
     const nb = orderQty(menu, wallet, id, SIDE.BUY, sell);
     const ns = orderQty(menu, wallet, id, SIDE.SELL, buy);

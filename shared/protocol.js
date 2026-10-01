@@ -27,13 +27,13 @@ export const MSG = Object.freeze({
   TRADE: 'trade', // {reqId, postId, goodId, qty, side: 'buy'|'sell'}
   // server → client
   WELCOME: 'welcome', // {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash},
-  //                      you: PlayerState, ack, players: [[id, name]], wallet: {money, cargo, hold}}
+  //                      you: PlayerState, ack, players: [[id, name]], wallet: {money, cargo, paid, hold}}
   PONG: 'pong', // {c: echoed clientTimeMs, s: serverTick (fractional)}
   SNAPSHOT: 'snap', // {tick, ack, you: PlayerState, g: Ghost[]} (see packGhost)
   JOINED: 'joined', // {id, name}
   LEFT: 'left', // {id}
   PRICES: 'prices', // {postId, tick: market tick, goods: [[goodId, sell, buy]]}: only to players in that post's zone
-  TRADE_RESULT: 'tradeResult', // {reqId, ok, reason?, price?, wallet: {money, cargo, hold}}
+  TRADE_RESULT: 'tradeResult', // {reqId, ok, reason?, price?, wallet: {money, cargo, paid, hold}}
   LEADERBOARD: 'board', // {rows: [[id, name, netWorth]]}, best first
   ERROR: 'error', // {reason}
 });

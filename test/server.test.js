@@ -153,7 +153,7 @@ test('at the spawn post: prices arrive, a trade goes through, the leaderboard co
   const { ws, nextOf } = await openWs();
   ws.send(encode(MSG.HELLO, { name: 'Tia', protocol: PROTOCOL_VERSION }));
   const welcome = await nextOf(MSG.WELCOME);
-  assert.deepEqual(welcome.wallet, { money: START_MONEY, cargo: {}, hold: HOLD_CAPACITY });
+  assert.deepEqual(welcome.wallet, { money: START_MONEY, cargo: {}, paid: {}, hold: HOLD_CAPACITY });
   const prices = await nextOf(MSG.PRICES);
   assert.equal(prices.postId, server.game.world.spawnPost);
   assert.ok(prices.goods.length >= 4);
@@ -164,6 +164,7 @@ test('at the spawn post: prices arrive, a trade goes through, the leaderboard co
   assert.equal(ok.reqId, 1);
   assert.equal(ok.ok, true);
   assert.equal(ok.wallet.cargo[goodId], 1);
+  assert.equal(ok.wallet.paid[goodId], ok.price);
   assert.equal(ok.wallet.money, START_MONEY - ok.price);
   assert.ok(Math.abs(ok.price - sell) / sell < 0.5, 'priced near the quote');
 

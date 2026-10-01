@@ -46,7 +46,7 @@ Controls: keyboard first (arrows/WASD move, Space/Z/K jump, E/Enter interact). G
 
 ## Cargo, money and death
 
-- Each **good** takes up some **size** in hold units ([ECONOMY.md § Goods](ECONOMY.md#goods-catalog)).
+- Every unit of every **good** takes one slot in the hold ([ECONOMY.md § Goods](ECONOMY.md#goods-catalog)).
 - The **hold** has a fixed capacity, 20 units to start. Hold upgrades bought at posts are a candidate money sink later.
 - **Money** has no weight or size and is never lost.
 - **When you die, you lose all your cargo.** You respawn instantly (after a short Meat Boy-style fade/restart) at the **last trade post you visited**. Your money is untouched.
@@ -55,7 +55,7 @@ Controls: keyboard first (arrows/WASD move, Space/Z/K jump, E/Enter interact). G
 ## Trade posts
 
 - Trade posts are structures placed in the world by the generator. Each one has a sheltered **zone** and a safe landing platform.
-- Standing in the zone and pressing interact (E/Enter) opens the **trade UI**. It's drawn in-canvas (see [ARCHITECTURE.md § UI](ARCHITECTURE.md#ui)) and controlled with the keyboard: ↑/↓ (W/S) pick a good, ←/→ (A/D, or 1/2/3) pick ×1 / ×5 / max, **Z** (or B) buys and **X** (or V) sells. Esc, E, Enter or Q closes it. ×5 is clamped to what you can afford and fit, so it never fails for being too big. The menu shows each good's size, the post's buy and sell price, what you carry, and what the selected order would cost or pay.
+- Standing in the zone and pressing interact (E/Enter) opens the **trade UI**. It's drawn in-canvas (see [ARCHITECTURE.md § UI](ARCHITECTURE.md#ui)) and controlled with the keyboard: ↑/↓ (W/S) pick a good, ←/→ (A/D, or 1/2/3) pick ×1 / ×5 / max, **Z** (or B) buys and **X** (or V) sells. Esc, E, Enter or Q closes it. ×5 is clamped to what you can afford and fit, so it never fails for being too big. The menu lists the post's goods with its buy and sell price, then any good you carry that the post doesn't trade, marked "not trading". Each row shows how many you carry and the average price you paid for them ([ECONOMY.md § Trade validation](ECONOMY.md#trade-validation)), and the menu shows what the selected order would cost or pay.
 - **The world doesn't pause.** The simulation keeps running while the UI is open. While it's open the menu takes the keyboard, so your character stands still. If anything moves you out of the zone (a respawn, say), the menu closes. Post zones are free of hazards and enemy spawns, but a flyer can wander close to the edge.
 - The HUD shows money, hold used/capacity and the post you're standing in. A leaderboard of net worth (top 5, plus your own rank if lower) sits top-right.
 - Each post stocks a **random subset** of the catalog. Which goods it stocks, and whether it only buys or sells some of them, sets up the trade routes.

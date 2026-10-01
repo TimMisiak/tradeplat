@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPriceBook, createTradeMenu, formatAge, menuKey, menuResult, openMenu } from '../client/ui/trade.js';
+import { createPriceBook, createTradeMenu, formatAge, menuKey, menuResult, menuRows, openMenu } from '../client/ui/trade.js';
 
 const goods = [['ore', 22, 18], ['food', 31, 28], ['relics', 610, 560]];
 
-function setup(wallet = { money: 500, cargo: { food: 2 }, hold: 20 }) {
+function setup(wallet = { money: 500, cargo: { food: 2 }, paid: { food: 29 }, hold: 20 }) {
   const menu = createTradeMenu();
   const sent = [];
   const ctx = { goods, wallet, now: 0, send: (o) => { sent.push(o); return sent.length; } };
@@ -28,18 +28,18 @@ test('arrows move the selection and quantity, wrapping', () => {
 });
 
 test('buy ×5 sends an order clamped to what the hold allows', () => {
-  const { menu, sent, ctx } = setup();
+  const { menu, sent, ctx } = setup({ money: 500, cargo: { food: 17 }, paid: { food: 29 }, hold: 20 });
   menu.qty = 1; // ×5
   menuKey(menu, 'KeyZ', ctx);
-  // Ore is 3 units; 2 food use 2 of 20, so 6 would fit and 5 is sent.
-  assert.deepEqual(sent, [{ postId: 4, goodId: 'ore', qty: 5, side: 'buy' }]);
+  // 17 food use 17 of 20, so only 3 more fit.
+  assert.deepEqual(sent, [{ postId: 4, goodId: 'ore', qty: 3, side: 'buy' }]);
   assert.equal(menu.pending, 1);
   // A second press waits for the answer.
   menuKey(menu, 'KeyZ', ctx);
   assert.equal(sent.length, 1);
   menuResult(menu, { reqId: 1, ok: true, price: 22 });
   assert.equal(menu.pending, 0);
-  assert.equal(menu.status.text, 'Bought 5 Ore for 110');
+  assert.equal(menu.status.text, 'Bought 3 Ore for 66');
 });
 
 test('max sells everything carried; impossible orders are explained without a request', () => {
@@ -54,6 +54,18 @@ test('max sells everything carried; impossible orders are explained without a re
   menuKey(menu, 'KeyZ', ctx);
   assert.equal(sent.length, 1);
   assert.equal(menu.status.text, "Can't buy: not enough money");
+});
+
+test('carried goods the post does not trade are listed after its goods, and can\'t be traded', () => {
+  const wallet = { money: 500, cargo: { relics: 1, water: 3, ore: 2 }, paid: { relics: 600, water: 8, ore: 20 }, hold: 20 };
+  assert.deepEqual(menuRows(goods, wallet), [...goods, ['water', null, null]]);
+  assert.deepEqual(menuRows(null, wallet), [], 'no rows before prices arrive');
+  const { menu, sent, ctx } = setup(wallet);
+  menuKey(menu, 'ArrowUp', ctx);
+  assert.equal(menu.sel, 3);
+  menuKey(menu, 'KeyX', ctx);
+  assert.equal(sent.length, 0);
+  assert.equal(menu.status.text, "Can't sell: not traded here");
 });
 
 test('price book: best remembered price elsewhere first', () => {

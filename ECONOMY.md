@@ -10,22 +10,22 @@ This doc covers goods, prices and trade rules. There are three stages: **v1 rand
 
 ## Goods catalog
 
-Goods are defined in `shared/goods.js` (the catalog is shared so the client can show names and sizes). Starting values:
+Goods are defined in `shared/goods.js` (the catalog is shared so the client can show names). Every good takes one hold slot per unit. Starting values:
 
-| id | Good | Size (hold units) | Base price | Volatility σ | v3 tier |
-|---|---|---|---|---|---|
-| `water` | Water | 2 | 8 | 0.03 | raw |
-| `grain` | Grain | 2 | 12 | 0.04 | raw |
-| `ore` | Ore | 3 | 20 | 0.05 | raw |
-| `fuel` | Fuel | 2 | 35 | 0.08 | raw |
-| `food` | Rations | 1 | 30 | 0.04 | intermediate |
-| `metal` | Metal | 2 | 60 | 0.05 | intermediate |
-| `cloth` | Cloth | 1 | 45 | 0.05 | intermediate |
-| `tools` | Tools | 1 | 140 | 0.06 | finished |
-| `meds` | Medicine | 1 | 220 | 0.09 | finished |
-| `relics` | Relics | 1 | 600 | 0.15 | luxury |
+| id | Good | Base price | Volatility σ | v3 tier |
+|---|---|---|---|---|
+| `water` | Water | 8 | 0.03 | raw |
+| `grain` | Grain | 12 | 0.04 | raw |
+| `ore` | Ore | 20 | 0.05 | raw |
+| `fuel` | Fuel | 35 | 0.08 | raw |
+| `food` | Rations | 30 | 0.04 | intermediate |
+| `metal` | Metal | 60 | 0.05 | intermediate |
+| `cloth` | Cloth | 45 | 0.05 | intermediate |
+| `tools` | Tools | 140 | 0.06 | finished |
+| `meds` | Medicine | 220 | 0.09 | finished |
+| `relics` | Relics | 600 | 0.15 | luxury |
 
-Size is what makes cheap bulky goods and expensive compact goods play differently when the hold is 20 units ([DESIGN.md](DESIGN.md#cargo-money-and-death)). The player starts with **500 money**.
+With a 20-unit hold ([DESIGN.md](DESIGN.md#cargo-money-and-death)), the hold limits how much of a cheap good you can carry and money limits an expensive one. The player starts with **500 money**.
 
 ## Posts and what they trade
 
@@ -63,10 +63,12 @@ The rules live in `shared/trade.js` (`checkTrade`, `applyTrade`), so the client 
 - the player isn't standing in that post's zone, **by the server's position** (the tile under the hitbox's centre column and feet row is inside `post.zone`);
 - the post doesn't trade that good, or the good doesn't exist;
 - the quantity isn't a whole number in 1…1000, or the side isn't `buy`/`sell`;
-- buying: the cost is more than the player's money, or the goods don't fit in the hold (`size × qty` on top of what's carried);
+- buying: the cost is more than the player's money, or the goods don't fit in the hold (`qty` on top of the units carried);
 - selling: the player carries fewer units than that.
 
 A trade fills completely at the price at the moment the server handles it (in v1, a market tick can land between the player seeing a price and the order arriving). The answer carries the unit price and the new wallet.
+
+The wallet also keeps the **average price paid** per good carried (`wallet.paid`). A buy folds its price in, weighted by units (`(avg × had + price × qty) / (had + qty)`). A sell leaves it unchanged, and it's dropped when the last unit goes. Individual lots aren't tracked.
 
 ### v1 market state (plain data)
 ```js
@@ -111,7 +113,7 @@ In v3, prices come from actual production and consumption.
 | σ per good | Risk and reward of each good |
 | Bias range | How strong and stable the trade routes are (v1) |
 | ε, r (v2) | How hard trades push prices, and how fast posts recover |
-| Hold capacity / size | Scale of each trip, and bulk vs. compact goods |
+| Hold capacity | Scale of each trip |
 | Route danger | Set in [WORLDGEN.md](WORLDGEN.md#pipeline). Risk premium on distant or dangerous posts |
 
 ## Tests

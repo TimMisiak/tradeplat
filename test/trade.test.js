@@ -10,7 +10,7 @@ import { quote } from '../server/market.js';
 const q = { ore: { sell: 22, buy: 18 }, relics: { sell: 610, buy: 560 }, food: { sell: 31, buy: 28 } };
 
 test('a new wallet: 500 money, empty 20-unit hold', () => {
-  assert.deepEqual(createWallet(), { money: START_MONEY, cargo: {}, hold: HOLD_CAPACITY });
+  assert.deepEqual(createWallet(), { money: START_MONEY, cargo: {}, paid: {}, hold: HOLD_CAPACITY });
 });
 
 test('checkTrade refusals', () => {
@@ -22,9 +22,10 @@ test('checkTrade refusals', () => {
   assert.equal(checkTrade(w, order({ side: 'steal' }), q), 'bad side');
   for (const qty of [0, -1, 1.5, '3', 1e6]) assert.equal(checkTrade(w, order({ qty }), q), 'bad quantity', String(qty));
   assert.equal(checkTrade(w, order({ goodId: 'relics' }), q), 'not enough money');
-  // Ore is 3 units: 6 fit in 20, a 7th doesn't.
-  assert.equal(checkTrade(w, order({ qty: 6 }), q), null);
-  assert.equal(checkTrade(w, order({ qty: 7 }), q), 'hold full');
+  // Every unit takes one slot: 20 fit in 20, a 21st doesn't.
+  const rich = { ...w, money: 1e6 };
+  assert.equal(checkTrade(rich, order({ qty: 20 }), q), null);
+  assert.equal(checkTrade(rich, order({ qty: 21 }), q), 'hold full');
   assert.equal(checkTrade(w, order({ side: 'sell' }), q), 'not enough cargo');
 });
 
@@ -36,17 +37,32 @@ test('buy then sell moves money and cargo at the quoted prices', () => {
   assert.equal(r.wallet.money, 500 - 110);
   assert.deepEqual(w.cargo, {}, 'input wallet untouched');
   w = r.wallet;
-  assert.equal(holdUsed(w.cargo), 15);
+  assert.equal(holdUsed(w.cargo), 5);
   r = applyTrade(w, { goodId: 'ore', qty: 5, side: 'sell' }, q);
   assert.equal(r.price, 18);
   assert.deepEqual(r.wallet.cargo, {}, 'empty entries are dropped');
+  assert.deepEqual(r.wallet.paid, {});
   assert.equal(r.wallet.money, 390 + 90);
+});
+
+test('average paid is weighted by units bought, and selling leaves it alone', () => {
+  let w = createWallet();
+  w = applyTrade(w, { goodId: 'ore', qty: 3, side: 'buy' }, q).wallet; // 3 @ 22
+  assert.equal(w.paid.ore, 22);
+  w = applyTrade(w, { goodId: 'ore', qty: 1, side: 'buy' }, { ore: { sell: 30, buy: 25 } }).wallet; // 1 @ 30
+  assert.equal(w.paid.ore, (3 * 22 + 30) / 4);
+  w = applyTrade(w, { goodId: 'ore', qty: 2, side: 'sell' }, q).wallet;
+  assert.equal(w.paid.ore, 24);
+  w = applyTrade(w, { goodId: 'ore', qty: 2, side: 'buy' }, { ore: { sell: 12, buy: 10 } }).wallet; // 2 @ 24 + 2 @ 12
+  assert.equal(w.paid.ore, 18);
+  w = applyTrade(w, { goodId: 'food', qty: 1, side: 'buy' }, q).wallet;
+  assert.deepEqual(w.paid, { ore: 18, food: 31 });
 });
 
 test('maxQty is limited by money, hold space, or cargo', () => {
   const w = { money: 100, cargo: { food: 4 }, hold: 20 };
   assert.equal(maxQty(w, 'ore', 'buy', 22), 4); // money: 100/22
-  assert.equal(maxQty({ ...w, money: 1e6 }, 'ore', 'buy', 22), 5); // hold: 16 free / 3
+  assert.equal(maxQty({ ...w, money: 1e6 }, 'ore', 'buy', 22), 16); // hold: 16 free
   assert.equal(maxQty(w, 'food', 'sell', 28), 4);
   assert.equal(maxQty(w, 'ore', 'sell', 18), 0);
 });
