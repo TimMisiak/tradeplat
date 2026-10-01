@@ -14,10 +14,13 @@ Both strips use 32×24 frames and the same (12,24) foot anchor:
 
 - `client/assets/sprites/patroller/walk.png`: four frames, 8 fps, looping.
 - `client/assets/sprites/patroller/swing.png`: two frames, 8 fps, not looping;
-  wind-up then full extension. Combat timing is not implemented by this art.
+  wind-up then full extension with a broad, tapered, semitransparent slash arc
+  above the blade, ending at the sword. Combat timing and damage area are not
+  implemented by this art.
 
 The ninja body remains roughly 16×16. Canvas padding provides room for the sword,
-not a larger collision box. All frames face right and use hard alpha.
+not a larger collision box. All frames face right. The ninja and sword use hard
+alpha; the slash effect uses alpha 110/255 for its fill and 150/255 for its edge.
 
 `ninja-review.png` shows every pose and the courier at equal scale.
 `walk-preview.gif` and `swing-preview.gif` loop for review; the swing preview holds

@@ -212,12 +212,15 @@ All three assets are visually approved.
 A simple dark ninja uses an orange headband and sash, a level hood top, and a
 gray sword visible only during the swing. The four-frame walk has empty hands
 and loops at 8 fps. The two-frame `swing` shows an
-overhead wind-up followed by full rightward extension; it does not loop. Its
+overhead wind-up followed by full rightward extension with a broad gray-and-ivory
+semitransparent slash arc showing the sword sweep above the blade and ending at
+the sword; it does not loop. Its
 8 fps is preview metadata, not a decision about combat timing.
 
 Both animations use a 32×24 canvas with anchor (12,24). The body remains roughly
 16×16; transparent padding accommodates the raised and extended sword. Frames
-face right and use only manifest palette colors with hard alpha. The canvas
+face right and use only manifest palette colors. The body and blade use hard
+alpha; the slash effect uses semitransparent fill (110/255) and edge (150/255). The canvas
 does not define the body collision box or the sword attack hitbox.
 
 Sources and static/animated reviews are in [art/patroller/](art/patroller/README.md).

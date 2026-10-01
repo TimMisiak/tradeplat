@@ -54,6 +54,14 @@ def frame(pose):
         d.line((12, 7, 14, 4), fill=P['money'])
         limb(d, [(9, 15), (8, 17)])
     elif pose == 'extended':
+        # Broad tapered crescent traces the overhead-to-forward sword sweep.
+        # Draw behind the blade, with an open centre to preserve the silhouette.
+        trail = tuple(bytes.fromhex(P['ghost'][1:])) + (110,)
+        edge = tuple(bytes.fromhex(P['player'][1:])) + (150,)
+        d.polygon([(16, 2), (22, 3), (27, 6), (30, 10), (31, 14),
+                   (28, 14), (27, 12), (24, 8), (20, 5)], fill=trail)
+        d.line([(16, 2), (22, 3), (27, 6), (30, 10), (31, 14),
+                ], fill=edge, width=1)
         limb(d, [(14, 16), (19, 16)])
         d.line((19, 16, 22, 16), fill=P['postFloor'])
         d.line((22, 14, 22, 18), fill=P['money'])
