@@ -62,11 +62,8 @@ def frame(pose):
         d.line((23, 16, 29, 16), fill=P['ghost'])
         limb(d, [(9, 16), (7, 18)])
     else:
-        # Compact carried blade fits within the walking body's footprint.
+        # Empty hands while walking; the sword appears only in the swing poses.
         limb(d, [(14, 15 + y), (16, 17 + y)])
-        d.line((17, 14 + y, 17, 19 + y), fill=P['uiPanel'], width=3)
-        d.line((17, 14 + y, 17, 18 + y), fill=P['ghost'])
-        d.line((16, 19 + y, 18, 19 + y), fill=P['postFloor'])
         limb(d, [(9, 15 + y), (7 + (pose % 2), 17 + y)])
     return im
 

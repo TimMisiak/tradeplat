@@ -1,6 +1,7 @@
 # Ninja patroller
 
-Simple dark hood and suit, orange headband and sash, gray sword. All colors come
+Simple dark hood and suit, orange headband and sash, gray sword visible only in
+the swing poses. Walk frames have empty hands. All colors come
 from the manifest. Native pixel source follows the existing Python/Pillow art
 workflow; no image downsampling is used.
 

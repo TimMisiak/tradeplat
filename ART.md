@@ -210,7 +210,8 @@ All three assets are visually approved.
 ### Ninja patroller — first pass
 
 A simple dark ninja uses an orange headband and sash, a level hood top, and a
-gray sword. The four-frame walk loops at 8 fps. The two-frame `swing` shows an
+gray sword visible only during the swing. The four-frame walk has empty hands
+and loops at 8 fps. The two-frame `swing` shows an
 overhead wind-up followed by full rightward extension; it does not loop. Its
 8 fps is preview metadata, not a decision about combat timing.
 
