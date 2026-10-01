@@ -28,6 +28,14 @@
     "postWall": { "file": "tiles/postwall.png", "autotile": "cardinal4" }
   },
   "sprites": {
+    "patroller": {
+      "frame": [32, 24],
+      "anchor": [12, 24],
+      "anims": {
+        "walk": { "file": "sprites/patroller/walk.png", "frames": 4, "fps": 8, "loop": true },
+        "swing": { "file": "sprites/patroller/swing.png", "frames": 2, "fps": 8, "loop": false }
+      }
+    },
     "postSign": {
       "frame": [32, 16],
       "anchor": [16, 16],
