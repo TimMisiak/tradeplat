@@ -307,3 +307,25 @@ export async function loadTileArt(device, manifest, base = new URL('./assets/', 
   console.info(`[assets] tile art: ${Object.keys(art).join(', ')} (${layers} layers)`);
   return { texture, art };
 }
+
+/**
+ * Load the goods icons the manifest lists (16×16 PNGs). Missing or broken ones are
+ * left out, so the UI draws a flat swatch for them instead.
+ * @returns {Promise<Record<string, ImageBitmap>>} goodId → bitmap
+ */
+export async function loadIcons(manifest, base = new URL('./assets/', import.meta.url)) {
+  const out = {};
+  await Promise.all(Object.entries(manifest?.icons?.goods ?? {}).map(async ([id, file]) => {
+    if (!GOODS.some((g) => g.id === id) || typeof file !== 'string') return;
+    try {
+      const res = await fetch(new URL(file, base));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bmp = await createImageBitmap(await res.blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+      if (bmp.width === ICON_PX && bmp.height === ICON_PX) out[id] = bmp;
+      else { console.warn(`[assets] icon ${id}: ${bmp.width}×${bmp.height}, expected ${ICON_PX}×${ICON_PX}`); bmp.close(); }
+    } catch (err) {
+      console.warn(`[assets] icon ${id}: ${err.message}. Using a flat swatch`);
+    }
+  }));
+  return out;
+}

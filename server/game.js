@@ -1,6 +1,8 @@
 // World instance, fixed-tick loop and player registry. See ARCHITECTURE.md § Simulation and § Netcode.
 // The world is generated from a seed on start (WORLDGEN.md). Clients get only
-// {seed, genVersion, hash} and regenerate it themselves. The market plugs in later.
+// {seed, genVersion, hash} and regenerate it themselves. The market (market.js)
+// is seeded from the same seed and ticks every MARKET_TICKS. Trades are checked
+// against the server's own position and wallet (ECONOMY.md, shared/trade.js).
 //
 // Players are stepped independently, as their inputs arrive (ghosts don't interact).
 // Each server tick gives a player one tick of credit. An input tick runs only when
@@ -17,6 +19,8 @@ import { performance } from 'node:perf_hooks';
 import { randomInt } from 'node:crypto';
 import { INPUT_MASK, TICK_RATE, spawnAt, stepInput } from '../shared/physics.js';
 import { generateWorld } from '../shared/worldgen.js';
+import { applyTrade, checkTrade, createWallet, postAt } from '../shared/trade.js';
+import { MARKET_TICKS, createMarket, quote, tickMarket } from './market.js';
 
 export { TICK_RATE };
 const TICK_MS = 1000 / TICK_RATE;
@@ -34,7 +38,9 @@ const START_CREDIT = 2;
  *   version: 1, id: number, name: string,
  *   state: import('../shared/physics.js').PlayerState,
  *   seq: number, bits: number, queue: number[], credit: number, started: boolean, stalled: boolean, resync: boolean,
+ *   wallet: import('../shared/trade.js').Wallet, post: number,
  * }} Player
+ * post: id of the post whose zone the player is in (-1 if none), updated every tick.
  * seq: last input tick applied (the snapshot's ackSeq). bits: its input.
  * stalled: filler steps ran since the last real input. resync: reset the credit next tick.
  * queue: input bits for seq+1, seq+2, … that arrived before there was credit for them.
@@ -52,6 +58,7 @@ export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
     world,
     genMs,
     spawn,
+    market: createMarket(world.seed, world.posts),
     tick: 0,
     running: false,
     /** @type {Map<number, Player>} */
@@ -65,6 +72,7 @@ export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
     removePlayer,
     receiveInput,
     advance,
+    trade,
   };
 
   let nextPlayerId = 1;
@@ -74,13 +82,37 @@ export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
 
   /** @returns {Player} */
   function addPlayer(name) {
-    const p = { version: 1, id: nextPlayerId++, name, state: spawn, seq: 0, bits: 0, queue: [], credit: 0, started: false, stalled: false, resync: false };
+    const p = {
+      version: 1, id: nextPlayerId++, name, state: spawn, seq: 0, bits: 0, queue: [], credit: 0, started: false, stalled: false, resync: false,
+      wallet: createWallet(), post: postIdAt(spawn),
+    };
     game.players.set(p.id, p);
     return p;
   }
 
   function removePlayer(id) {
     game.players.delete(id);
+  }
+
+  function postIdAt(state) {
+    return postAt(world.posts, state)?.id ?? -1;
+  }
+
+  /**
+   * Buy or sell at a post, if the player is standing in its zone right now (by the
+   * server's position) and the wallet allows it.
+   * @param {Player} p
+   * @param {{postId: number, goodId: string, qty: number, side: string}} order
+   * @returns {{ok: boolean, reason?: string, price?: number}}
+   */
+  function trade(p, order) {
+    const here = postIdAt(p.state);
+    const q = here >= 0 && here === order.postId ? quote(game.market, here) : null;
+    const reason = checkTrade(p.wallet, order, q);
+    if (reason) return { ok: false, reason };
+    const { wallet, price } = applyTrade(p.wallet, order, q);
+    p.wallet = wallet;
+    return { ok: true, price };
   }
 
   function apply(p, bits) {
@@ -135,6 +167,7 @@ export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
   /** One server tick of player bookkeeping. Runs before the onTick hooks. */
   function advance() {
     game.tick++;
+    if (game.tick % MARKET_TICKS === 0) tickMarket(game.market);
     for (const p of game.players.values()) {
       if (!p.started) continue;
       if (p.resync) {
@@ -147,6 +180,7 @@ export function createGame({ seed = randomInt(0, 2 ** 32) } = {}) {
         applyFiller(p);
         p.credit--;
       }
+      p.post = postIdAt(p.state);
     }
     for (const fn of game.onTick) fn(game.tick);
   }

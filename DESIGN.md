@@ -13,12 +13,12 @@ Taipan! with your thumbs. Trading gives you the *why*: a price gap between two p
 3. **Buy** cargo, up to your hold capacity and your money.
 4. **Run** across the map to another post, getting past terrain, hazards and enemies.
 5. **Sell** at a profit, or not, if prices moved while you were travelling.
-6. Repeat, growing your **net worth** (money + cargo at local sell price).
+6. Repeat, growing your **net worth** (money + cargo, valued as in [ECONOMY.md § Net worth](ECONOMY.md#net-worth-leaderboard)).
 
 A live **leaderboard** ranks players on the server by net worth. For now the world resets whenever the server restarts (see [ARCHITECTURE.md § Persistence readiness](ARCHITECTURE.md#persistence-readiness)).
 
 ### Information is part of the game
-A post shows prices only while you're standing in it. Prices you've seen before are shown with their age ("Ore @ Rustmouth: 42, 3 min ago"). You can't see live prices at a distance for now. Scouting and remembering are part of the skill. Selling that information (price boards, a scouting item) is a possible later feature.
+A post shows prices only while you're standing in it. Prices you've seen before are shown with their age ("Ore @ Rustmouth: 42, 3 min ago"). In the trade menu, the selected good lists the best prices you remember other posts paying for it, with how old each one is. The memory lasts until you reload or the server's world changes. You can't see live prices at a distance for now. Scouting and remembering are part of the skill. Selling that information (price boards, a scouting item) is a possible later feature.
 
 ## Movement feel
 
@@ -55,10 +55,11 @@ Controls: keyboard first (arrows/WASD move, Space/Z/K jump, E/Enter interact). G
 ## Trade posts
 
 - Trade posts are structures placed in the world by the generator. Each one has a sheltered **zone** and a safe landing platform.
-- Standing in the zone and pressing interact opens the **trade UI**. It's drawn in-canvas (see [ARCHITECTURE.md § UI](ARCHITECTURE.md#ui)) and controlled with the keyboard: pick a good, then press buy/sell with ×1 / ×5 / max quantities.
-- **The world doesn't pause.** The simulation keeps running while the UI is open. Post zones are free of hazards and enemy spawns, but a flyer can wander close to the edge.
+- Standing in the zone and pressing interact (E/Enter) opens the **trade UI**. It's drawn in-canvas (see [ARCHITECTURE.md § UI](ARCHITECTURE.md#ui)) and controlled with the keyboard: ↑/↓ (W/S) pick a good, ←/→ (A/D, or 1/2/3) pick ×1 / ×5 / max, **Z** (or B) buys and **X** (or V) sells. Esc, E, Enter or Q closes it. ×5 is clamped to what you can afford and fit, so it never fails for being too big. The menu shows each good's size, the post's buy and sell price, what you carry, and what the selected order would cost or pay.
+- **The world doesn't pause.** The simulation keeps running while the UI is open. While it's open the menu takes the keyboard, so your character stands still. If anything moves you out of the zone (a respawn, say), the menu closes. Post zones are free of hazards and enemy spawns, but a flyer can wander close to the edge.
+- The HUD shows money, hold used/capacity and the post you're standing in. A leaderboard of net worth (top 5, plus your own rank if lower) sits top-right.
 - Each post stocks a **random subset** of the catalog. Which goods it stocks, and whether it only buys or sells some of them, sets up the trade routes.
-- Each post has a generated name and a color identity, so you can tell them apart at a glance.
+- Each post has a generated name and a color identity, so you can tell them apart at a glance. Its name floats over the roof and a sign in its color hangs in each doorway.
 
 ## Enemies and hazards (v1)
 
@@ -93,13 +94,14 @@ Flat-colored tiles and simple sprite quads with a readable palette: terrain is m
 |---|---|
 | Core loop | designed |
 | Movement feel | built (M1); tuning in progress using the \` panel |
-| Cargo / death | designed; built in M4/M5 |
-| Trade posts / UI | designed; M4 |
+| Cargo / death | cargo, money and hold built (M4); death and cargo loss in M5 |
+| Trade posts / UI | built (M4): trade menu, HUD, leaderboard, price memory with ages, post signs and names |
 | Enemies v1 | designed; M5 |
-| Multiplayer ghosts | built (M3): translucent, tinted, interpolated. Name tags wait for the M4 text atlas |
+| Multiplayer ghosts | built (M3): translucent, tinted, interpolated. Name tags since M4 |
 
 ## Open questions
 
+- **Trade menu on a gamepad:** the menu is keyboard-only for now. A gamepad needs menu navigation on the d-pad and buy/sell on face buttons.
 - **Dropped cargo:** when you die, should your cargo drop as a pickup that other players (or you) can grab for a while? That would make death a multiplayer event and give scavengers a role.
 - **Time model:** should there be an in-game day clock (price ticks per day, day/night hazards), or only real time?
 - **Identity:** anonymous names now. When persistence lands, what kind of accounts?

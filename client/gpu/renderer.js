@@ -1,6 +1,7 @@
 // WebGPU device setup and frame submission. See ARCHITECTURE.md § Rendering.
-// Two passes inside the letterboxed viewport: tiles (one fullscreen triangle
-// reading an r8uint map texture), then sprites (instanced quads).
+// Passes inside the letterboxed viewport: tiles (one fullscreen triangle reading an
+// r8uint map texture), then world sprites (instanced quads), then UI quads (the same
+// pipeline in screen space, textured from the glyph/icon atlas in ui/text.js).
 import { SPRITE_WGSL, TILE_WGSL } from './shaders.js';
 
 /** Virtual resolution the game is laid out in (40 × 22.5 tiles of 16 px). */
@@ -65,6 +66,8 @@ export async function createRenderer(canvas) {
   // View uniforms (shared)
   const viewData = new Float32Array(8);
   const viewBuf = device.createBuffer({ label: 'view', size: viewData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  // The UI pass uses the same layout with the camera at 0,0 (virtual screen px).
+  const uiViewBuf = device.createBuffer({ label: 'ui view', size: viewData.byteLength, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
   // Tile pass
   const tileModule = device.createShaderModule({ label: 'tiles', code: TILE_WGSL });
@@ -145,6 +148,34 @@ export async function createRenderer(canvas) {
   device.queue.writeTexture({ texture: white }, new Uint8Array([255, 255, 255, 255]), { bytesPerRow: 4 }, [1, 1]);
   setAtlas(white);
 
+  // UI atlas (glyphs + icons), re-uploaded from its canvas whenever it changes.
+  let uiTex = null;
+  let uiBindGroup = null;
+  /** @param {{canvas: OffscreenCanvas, dirty: boolean}} atlas */
+  function syncUiAtlas(atlas) {
+    if (!atlas.dirty && uiTex) return;
+    const { width, height } = atlas.canvas;
+    if (!uiTex || uiTex.width !== width || uiTex.height !== height) {
+      uiTex?.destroy();
+      uiTex = device.createTexture({
+        label: 'ui atlas',
+        size: [width, height],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      uiBindGroup = device.createBindGroup({
+        layout: spritePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: uiViewBuf } },
+          { binding: 1, resource: uiTex.createView() },
+          { binding: 2, resource: sampler },
+        ],
+      });
+    }
+    device.queue.copyExternalImageToTexture({ source: atlas.canvas }, { texture: uiTex }, [width, height]);
+    atlas.dirty = false;
+  }
+
   /** Use a tile art texture array (layers referenced by style `art.layer`). */
   function setTileArt(texture) {
     tileArtTex = texture;
@@ -222,19 +253,26 @@ export async function createRenderer(canvas) {
 
   /**
    * Draw one frame.
-   * @param {{cam: [number, number], sprites: SpriteBatch}} scene cam = view top-left in world px
+   * @param {{cam: [number, number], sprites: SpriteBatch, ui?: SpriteBatch & {atlas?: any}}} scene
+   *   cam = view top-left in world px. ui is in virtual screen px, textured from ui.atlas.
    */
-  function frame({ cam, sprites }) {
+  function frame({ cam, sprites, ui }) {
     viewData.set([Math.round(cam[0]), Math.round(cam[1]), VIEW_W, VIEW_H, mapSize[0], mapSize[1], 0, 0]);
     device.queue.writeBuffer(viewBuf, 0, viewData);
+    viewData.set([0, 0]);
+    device.queue.writeBuffer(uiViewBuf, 0, viewData);
 
-    if (sprites.count > 0) {
-      const bytes = sprites.count * INSTANCE_FLOATS * 4;
+    const uiCount = ui?.atlas && ui.count > 0 ? ui.count : 0;
+    if (uiCount) syncUiAtlas(ui.atlas);
+    const total = sprites.count + uiCount;
+    if (total > 0) {
+      const bytes = total * INSTANCE_FLOATS * 4;
       if (!instanceBuf || instanceBuf.size < bytes) {
         instanceBuf?.destroy();
         instanceBuf = device.createBuffer({ label: 'sprite instances', size: Math.max(bytes, 64 * 1024), usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
       }
       device.queue.writeBuffer(instanceBuf, 0, sprites.data, 0, sprites.count * INSTANCE_FLOATS);
+      if (uiCount) device.queue.writeBuffer(instanceBuf, sprites.count * INSTANCE_FLOATS * 4, ui.data, 0, uiCount * INSTANCE_FLOATS);
     }
 
     const encoder = device.createCommandEncoder();
@@ -258,6 +296,12 @@ export async function createRenderer(canvas) {
       pass.setBindGroup(0, spriteBindGroup);
       pass.setVertexBuffer(0, instanceBuf);
       pass.draw(6, sprites.count);
+    }
+    if (uiCount) {
+      pass.setPipeline(spritePipeline);
+      pass.setBindGroup(0, uiBindGroup);
+      pass.setVertexBuffer(0, instanceBuf);
+      pass.draw(6, uiCount, 0, sprites.count);
     }
     pass.end();
     device.queue.submit([encoder.finish()]);

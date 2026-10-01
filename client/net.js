@@ -34,6 +34,14 @@ export function createNet({ name }) {
     onWelcome: [],
     /** Called with each snapshot. */
     onSnapshot: [],
+    /** Called with each prices message ({postId, tick, goods}). */
+    onPrices: [],
+    /** Called with each trade result. */
+    onTradeResult: [],
+    /** Our money and cargo, as the server last reported them. Never changed locally. */
+    wallet: null,
+    /** Latest leaderboard rows [[id, name, netWorth]], best first. */
+    board: [],
     /** Estimated server time, in fractional ticks, at performance.now() = `now`. */
     serverTick: (now = performance.now()) => now / TICK_MS + offset,
     /** Send input for ticks seq, seq+1, …. */
@@ -43,10 +51,21 @@ export function createNet({ name }) {
         ws.send(encode(MSG.INPUT, { seq: seq + i, tick: Math.round(net.serverTick() + lead()), bits: bits.slice(i, i + MAX_INPUT_BATCH) }));
       }
     },
+    /**
+     * Ask the server for a trade. Returns its reqId, or 0 if not connected.
+     * @param {{postId: number, goodId: string, qty: number, side: 'buy'|'sell'}} order
+     */
+    sendTrade(order) {
+      if (ws?.readyState !== WebSocket.OPEN || net.status !== 'connected') return 0;
+      const reqId = ++lastReqId;
+      ws.send(encode(MSG.TRADE, { reqId, ...order }));
+      return reqId;
+    },
   };
 
   let ws = null;
   let pingTimer = null;
+  let lastReqId = 0;
   /** server tick − performance.now() in ticks. */
   let offset = 0;
   let synced = false;
@@ -77,6 +96,7 @@ export function createNet({ name }) {
           net.playerId = msg.playerId;
           net.world = msg.world;
           net.names = new Map(msg.players);
+          net.wallet = msg.wallet;
           synced = false;
           // Rough until the first pong: the connect round trip is about two RTTs.
           clockSample(msg.serverTick, performance.now(), (performance.now() - sentAt) / 2);
@@ -94,6 +114,16 @@ export function createNet({ name }) {
         }
         case MSG.SNAPSHOT:
           for (const fn of net.onSnapshot) fn(msg);
+          break;
+        case MSG.PRICES:
+          for (const fn of net.onPrices) fn(msg);
+          break;
+        case MSG.TRADE_RESULT:
+          net.wallet = msg.wallet;
+          for (const fn of net.onTradeResult) fn(msg);
+          break;
+        case MSG.LEADERBOARD:
+          net.board = msg.rows;
           break;
         case MSG.JOINED:
           net.names.set(msg.id, msg.name);

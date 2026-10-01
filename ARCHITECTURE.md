@@ -31,7 +31,7 @@ server/
   static.js             # static files: / → client/, /shared/ → shared/ (traversal-safe)
   game.js               # world instance, fixed-tick loop, player registry
   net.js                # ws connection lifecycle, message dispatch, interest sets
-  market.js             # price processes, trade validation (server-only)
+  market.js             # v1 price process, quotes, net worth (server-only)
 shared/
   rng.js                # sfc32 seeded PRNG + helpers
   tiles.js              # tile ids, flags (solid, oneWay, hazard), map accessors
@@ -39,6 +39,7 @@ shared/
   worldgen.js           # seed → map + POIs + spawners
   enemies.js            # enemy kinds, deterministic position(spawner, tick)
   goods.js              # goods catalog
+  trade.js              # wallet, hold, post zones, trade validation (server authoritative, client for hints)
   protocol.js           # message type constants, encode/decode helpers
   mathdet.js            # deterministic sin/cos (see Determinism)
   maps/test.js          # hand-written M1 test level (ASCII)
@@ -55,8 +56,9 @@ client/
   assets/               # exported art: manifest.json, tiles/, sprites/, icons/ (ART.md)
   gpu/renderer.js       # device setup, tile pass, sprite pass
   gpu/shaders.js        # WGSL source strings
-  ui/text.js            # runtime glyph atlas, text quads
-  ui/trade.js           # trade menu state + layout
+  ui/text.js            # runtime glyph + icon atlas, UI batch (text, rects, icons)
+  ui/trade.js           # trade menu state, keys + layout; remembered prices
+  ui/hud.js             # money, hold, post, leaderboard, interact prompt
   tools/                # dev-only DOM pages: assets.html (art viewer), worldgen.html (map preview)
 art/                    # art source files (not served). See ART.md
 test/                   # *.test.js, run by node --test
@@ -95,7 +97,7 @@ Client prediction and client-side world generation both depend on client and ser
 
 ### Connection
 1. The client opens `ws(s)://host/ws` and sends `hello {name}`. The scheme and host always come from `location` (`wss:` on an `https:` page), because the game is served over HTTPS behind a TLS-terminating proxy, and WebGPU needs a secure context anyway. The server itself speaks plain HTTP/WS and never builds absolute URLs.
-2. The server replies `welcome {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash}, you, ack, players}`. `you` is the new player's starting state and `ack` its input seq (0). `players` is `[[id, name]]` for everyone else, kept current by `joined {id, name}` and `left {id}`. The market snapshot joins it in M4.
+2. The server replies `welcome {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash}, you, ack, players, wallet}`. `you` is the new player's starting state and `ack` its input seq (0). `players` is `[[id, name]]` for everyone else, kept current by `joined {id, name}` and `left {id}`. `wallet` is `{money, cargo, hold}`. There's no market snapshot: prices arrive only while standing in a post ([Deaths, trades and events](#deaths-trades-and-events)). A leaderboard follows the welcome right away.
 3. The client **regenerates the map from the seed** ([WORLDGEN.md](WORLDGEN.md#determinism)) and checks that its own map hash and tuning hash match the server's. If either doesn't match, it shows an error and refuses to play, because prediction would be wrong.
 4. Every welcome is a new server-side player, including after a reconnect. The client restarts prediction from `you` and `ack`.
 5. Dev worlds (`?seed=N`, `?map=test`) aren't the server's world. They stay connected but send no input and draw no ghosts. Online, the client always simulates with the server's `TUNING` and always reconciles. Tuning-panel edits ([DESIGN.md § Movement feel](DESIGN.md#movement-feel)) apply only in the offline dev worlds. (An earlier M3 version kept panel edits online and switched corrections off. Because edits persist in `localStorage`, one stale tweak left players silently out of sync with their own ghosts.)
@@ -122,7 +124,7 @@ The client pings the server once a second. `pong` carries the server's fractiona
 - A snapshot's `g` lists every other player in the client's interest set as `[id, x, y, facing, anim]` (`packGhost` in `shared/protocol.js`). x and y are rounded to 0.1 px. `facing` is the drawn facing (the wall side while sliding), and `anim` is an index into `ANIMS`.
 - The client buffers these and renders ghosts **6 ticks (100 ms) behind** the synced server clock, interpolating between the snapshots on either side of that time. At the ends it holds the nearest sample and doesn't extrapolate. A jump over 64 px (a respawn) or a gap over 30 ticks (the ghost was out of interest) snaps instead of sliding.
 - A ghost missing from the latest snapshot is dropped once its last sample has been drawn.
-- Ghosts are drawn before the local player, with the player sprite tinted translucent blue. Name tags need the M4 text atlas.
+- Ghosts are drawn before the local player, with the player sprite tinted translucent blue, and a name tag (from `players`/`joined`) in the UI pass.
 
 ### Enemies
 - Enemy positions are never sent. The client computes `enemies.position(spawner, tick)` itself.
@@ -130,8 +132,9 @@ The client pings the server once a second. `pong` carries the server's fractiona
 
 ### Deaths, trades and events
 - **Deaths:** the client predicts the death at once (splat, restart fade) and sends nothing extra. The server detects the same death while replaying inputs, clears the player's cargo, and sends `died {tick, cause}`. If the server disagrees, which should be rare, the client follows the server.
-- **Trades:** `trade {reqId, postId, goodId, qty, side}` → `tradeResult {reqId, ok, reason?, money, cargo}`. The server checks that the player is inside the post zone (using the server's position), has enough money or cargo, has hold space, and that the post actually trades that good. Money and cargo only change on the server.
-- **Market:** after each market tick, the server sends `prices {postId, …}` only to players who are in that post's zone. This supports the design rule that you only see prices where you are standing ([DESIGN.md](DESIGN.md#information-is-part-of-the-game)).
+- **Trades:** `trade {reqId, postId, goodId, qty, side}` → `tradeResult {reqId, ok, reason?, price?, wallet: {money, cargo, hold}}`. The server checks that the player is inside the post zone (using the server's position), has enough money or cargo, has hold space, and that the post actually trades that good ([ECONOMY.md § Trade validation](ECONOMY.md#trade-validation)). It handles a trade as soon as it arrives, against the player's latest simulated state. Money and cargo only change on the server; the client shows the wallet from the last `welcome` or `tradeResult` and keeps one order in flight at a time.
+- **Market:** the server ticks the market every 600 ticks (10 s). It sends `prices {postId, tick, goods: [[goodId, sell, buy]]}` only to players who are in that post's zone: once when the server sees them walk in (checked every tick), and again after each market tick while they stay. This supports the design rule that you only see prices where you are standing ([DESIGN.md](DESIGN.md#information-is-part-of-the-game)). The client keeps every prices message as its memory of that post, stamped with when it arrived, and calls them live if they arrived since it walked into the zone.
+- **Leaderboard:** `board {rows: [[id, name, netWorth]]}`, best first, every player on the server, broadcast every 120 ticks (2 s) and once after each welcome. At the 64-player target that is about 2 KB per 2 s per client; send only the top rows plus each player's own if it grows.
 
 ### Interest management
 - The world is divided into **32×32-tile chunks**. Each client's interest set is the 3×3 chunks around the chunk its player's centre is in. That covers the 40×22.5-tile view with at least a chunk of margin.
@@ -173,13 +176,17 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - **Sprite pass:**
   - Players, ghosts, enemies, particles and UI text are all **instanced quads**.
   - Each frame the client fills a CPU-side `Float32Array` of instances `{x, y, w, h, color, uvRect, flags}` and uploads it with `writeBuffer`, then issues one draw per material (a flat-color pipeline and a textured/atlas pipeline).
-  - Draw order: tiles, then enemies, then ghosts (alpha), then the local player, then particles, then UI.
+  - Draw order: tiles, then post signs, then enemies, then ghosts (alpha), then the local player, then particles, then UI.
+  - **UI pass:** the same sprite pipeline with its own view uniform (camera at 0,0, so positions are virtual screen px) and its own texture, the UI atlas from `ui/text.js`. Both batches share one instance buffer; the UI draws with `firstInstance` after the world sprites. World-anchored labels (ghost name tags, post names) are converted to screen px on the CPU.
 - **Rendering order:** the `requestAnimationFrame` callback runs any pending fixed simulation steps, interpolates positions for drawing, then encodes and submits one command buffer.
 
 ## UI
 
 - The **DOM holds the `<canvas>` plus a hidden `<input>`**, which is focused only for typing your name and future chat, so mobile and IME text entry work. Everything else is drawn in WebGPU.
 - **Text:** `ui/text.js` builds a **glyph atlas at runtime**. It draws each character with Canvas2D `fillText` into an `OffscreenCanvas` using a system monospace font, then uploads it as a texture. Text is then just textured quads in the sprite pass, so no font files or libraries are needed.
+  - Glyphs are monospace cells of 6×11 virtual px. The atlas is drawn at the viewport's integer scale, so a cell maps 1:1 onto device pixels and text is crisp (not upscaled pixel text). It's rebuilt when the scale changes.
+  - Printable ASCII and a few symbols are preloaded. Any other character (player names may be any script) is added on first use and the texture re-uploaded; a full atlas draws `?`.
+  - Goods icons from the manifest are copied into the same atlas (nearest-neighbour), so the whole UI is one texture. A good without an icon gets a flat swatch in a post-palette color.
 - The **trade menu, HUD** (money, hold used/capacity, the name of the post you're at) and **leaderboard** are simple immediate-mode layouts built on top of that. Trade is keyboard-driven ([DESIGN.md § Trade posts](DESIGN.md#trade-posts)).
 
 ## Persistence readiness
@@ -197,6 +204,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - `test/worldgen.test.js`: the same seed gives the same map hash, and many seeds all pass reachability ([WORLDGEN.md](WORLDGEN.md#reachability-v1)).
 - `test/market.test.js`: prices stay bounded over a long simulated run ([ECONOMY.md](ECONOMY.md#v1-random-walk-prices)).
 - `test/trade.test.js`: trade validation (out of zone, no money, full hold).
+- `test/trade-ui.test.js`: trade menu keys, order sizing (×5 clamped, max), refusals explained without a request, price memory ordering.
 - `test/netcode.test.js`: the server's credit and queue (speed-hack guard, gaps, duplicates, filler steps and recovery). Also: server state equals a plain replay, prediction against the server gives zero mismatches, a misprediction replays correctly, ghost interpolation, and interest chunks.
 - `test/server.test.js`: over real sockets, welcome fields, acknowledged input matches a local replay, and two players see each other as ghosts with join and leave events.
 - `bench/snapshot.bench.js`: bytes and CPU per snapshot at N players, JSON vs. a packed-binary estimate. Run with `npm run bench -- snapshot`.
@@ -209,7 +217,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 | M1 | `physics.js` step + tuning, fixed-step client loop with interpolation, sprite pass + runtime sprite atlas, input (keyboard + gamepad), follow camera, dev tuning panel. The **tile pass landed here too** (flat palette colors with exposed-edge shading). Tile art is M2 | **done** 2026-09-30 |
 | M2 | tile art in the tile pass: a 16×16 texture array, cardinal4 masks (a neighbour joins if it's the same tile or both are solid), and spikes rotated onto their solid neighbour. Also the camera on the full-size generated map, and loading the world from the server's seed | **done** 2026-09-30 |
 | M3 | netcode: clock sync, prediction/reconciliation (credit-based speed guard, no-input filler), ghosts with 100 ms interpolation, 3×3-chunk interest sets, join/leave, snapshot bench (verdict: JSON). Checked in headless Chromium with two tabs: no mismatches in normal play, and one correction after a forced 1.2 s stall. Ghost name tags wait for the M4 text atlas | **done** 2026-09-30 |
-| M4 | trade messages, text atlas, trade UI | not started |
+| M4 | trade, prices and leaderboard messages (protocol 3), text + icon atlas and UI pass, trade menu, HUD, leaderboard, ghost name tags, post signs. Checked in headless Chromium (frames read back from an offscreen texture): HUD, signs, ghost name tags, the menu, ×5 and max buys, icon art, the offline dev world | **done** 2026-09-30 |
 | M6+ | persistence snapshots, binary protocol (if the bench says so), PvP netcode | not started |
 
 ## Open questions

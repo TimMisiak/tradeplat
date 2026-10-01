@@ -7,6 +7,7 @@ import { cleanName } from '../server/net.js';
 import { resolvePath } from '../server/static.js';
 import { MSG, PROTOCOL_VERSION, WS_PATH, decode, encode } from '../shared/protocol.js';
 import { INPUT, TUNING, stepInput, tuningHash } from '../shared/physics.js';
+import { HOLD_CAPACITY, START_MONEY } from '../shared/trade.js';
 
 let server;
 let base;
@@ -85,7 +86,7 @@ function openWs() {
 }
 
 test('hello → welcome, ping → pong', async () => {
-  const { ws, next } = await openWs();
+  const { ws, next, nextOf } = await openWs();
   ws.send(encode(MSG.HELLO, { name: '  Ada<script>  ', protocol: PROTOCOL_VERSION }));
   const welcome = await next();
   assert.equal(welcome.t, MSG.WELCOME);
@@ -94,7 +95,7 @@ test('hello → welcome, ping → pong', async () => {
   assert.ok(Number.isInteger(welcome.playerId) && welcome.playerId > 0);
 
   ws.send(encode(MSG.PING, { c: 1234.5 }));
-  const pong = await next();
+  const pong = await nextOf(MSG.PONG);
   assert.equal(pong.t, MSG.PONG);
   assert.equal(pong.c, 1234.5);
   assert.ok(pong.s >= welcome.serverTick);
@@ -146,6 +147,37 @@ test('two players see each other as ghosts, with join and leave events', async (
   const left = await a.nextOf(MSG.LEFT);
   assert.equal(left.id, wb.playerId);
   a.ws.close();
+});
+
+test('at the spawn post: prices arrive, a trade goes through, the leaderboard counts it', async () => {
+  const { ws, nextOf } = await openWs();
+  ws.send(encode(MSG.HELLO, { name: 'Tia', protocol: PROTOCOL_VERSION }));
+  const welcome = await nextOf(MSG.WELCOME);
+  assert.deepEqual(welcome.wallet, { money: START_MONEY, cargo: {}, hold: HOLD_CAPACITY });
+  const prices = await nextOf(MSG.PRICES);
+  assert.equal(prices.postId, server.game.world.spawnPost);
+  assert.ok(prices.goods.length >= 4);
+  const [goodId, sell] = prices.goods[0];
+
+  ws.send(encode(MSG.TRADE, { reqId: 1, postId: prices.postId, goodId, qty: 1, side: 'buy' }));
+  const ok = await nextOf(MSG.TRADE_RESULT);
+  assert.equal(ok.reqId, 1);
+  assert.equal(ok.ok, true);
+  assert.equal(ok.wallet.cargo[goodId], 1);
+  assert.equal(ok.wallet.money, START_MONEY - ok.price);
+  assert.ok(Math.abs(ok.price - sell) / sell < 0.5, 'priced near the quote');
+
+  ws.send(encode(MSG.TRADE, { reqId: 2, postId: prices.postId, goodId, qty: 99, side: 'sell' }));
+  const refused = await nextOf(MSG.TRADE_RESULT);
+  assert.deepEqual([refused.reqId, refused.ok, refused.reason], [2, false, 'not enough cargo']);
+  ws.send(encode(MSG.TRADE, { reqId: 3, postId: 'x', goodId, qty: 1, side: 'buy' }));
+  assert.equal((await nextOf(MSG.TRADE_RESULT)).reason, 'malformed');
+
+  const board = await nextOf(MSG.LEADERBOARD, (m) => m.rows.some(([id]) => id === welcome.playerId));
+  const row = board.rows.find(([id]) => id === welcome.playerId);
+  assert.equal(row[1], 'Tia');
+  assert.ok(row[2] > START_MONEY - ok.price, 'cargo counts toward net worth');
+  ws.close();
 });
 
 test('protocol mismatch gets an error and a close', async () => {

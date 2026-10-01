@@ -34,7 +34,7 @@ Each decision is written down in one doc, and the others link to it. Every doc e
 | M0 | Repo skeleton, static server, WebGPU clear-screen, `node --test` running | ARCHITECTURE, ART | **done** 2026-09-30 |
 | M1 | Shared physics plus a local single-player on a hand-written test map, with the movement feel tuned | DESIGN, ARCHITECTURE | **built** 2026-09-30. Feel tuning is ongoing with the \` panel |
 | M2 | World generation with the flood-fill reachability check, the tile-texture renderer, and the scrolling camera | WORLDGEN | **done** 2026-09-30 |
-| M3 | Server-authoritative netcode: prediction, reconciliation, and interpolated ghosts | ARCHITECTURE | **done** 2026-09-30. Ghost name tags wait for M4's text atlas |
-| M4 | Trade posts, v1 random-walk market, hold capacity, in-canvas trade UI | ECONOMY, DESIGN | not started |
+| M3 | Server-authoritative netcode: prediction, reconciliation, and interpolated ghosts | ARCHITECTURE | **done** 2026-09-30. Ghost name tags landed in M4 |
+| M4 | Trade posts, v1 random-walk market, hold capacity, in-canvas trade UI | ECONOMY, DESIGN | **done** 2026-09-30. Also the HUD, net-worth leaderboard, price memory, name tags and post signs |
 | M5 | Hazards and enemies, death, cargo loss, respawn | DESIGN | not started |
 | M6+ | v2 supply and demand, v3 production tree, persistence, PvP study | ECONOMY, ARCHITECTURE | not started |

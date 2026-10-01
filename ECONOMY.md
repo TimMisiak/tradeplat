@@ -30,7 +30,7 @@ Size is what makes cheap bulky goods and expensive compact goods play differentl
 ## Posts and what they trade
 
 - Each post trades a **random subset of 4–6 goods**, buying and selling each of them.
-- The subsets are chosen by the server from its own seeded RNG, drawn after world generation. Each good is guaranteed to be traded at ≥ 2 posts, otherwise it would be useless.
+- The subsets are chosen by the server from its own seeded RNG (seeded from the world seed), drawn after world generation. Each good is guaranteed to be traded at ≥ 2 posts, otherwise it would be useless. A good that falls short is added to posts that still have room; only if every other post is full does one go to 7 goods.
 - Each (post, good) pair gets a persistent **local bias** `b`: a log-normal factor with its log in about [−0.5, +0.5], which works out to roughly ×0.6–×1.65 around the base price.
   - **Without a bias, every post would center on the same price, and profit would come only from noise.** The bias gives each post a lasting identity ("ore is cheap at Rustmouth, dear at Skyhold"), and the random walk moves prices around it.
   - v3 replaces the bias with actual production and consumption.
@@ -48,13 +48,25 @@ mid  = e^x
 
 - **Why mean reversion?** A pure random walk in log price drifts without bound. Over a long server uptime, prices would end up at 0.01 or 10⁶. With mean reversion, the long-run spread of the log price is `σ/√(2θ−θ²)`. For θ = 0.05 and σ = 0.05, that's about 0.16, so about 95% of the time the price stays within ×0.73–×1.38 of the post's long-run price.
 - **How long a trend lasts:** a deviation from the long-run price halves in `ln2/θ ≈ 14 ticks ≈ 2.3 min`. That is longer than a trip, which is what we want: a price you saw is still meaningful when you arrive, but not guaranteed.
-- **Spread:** the post sells at `round(mid·(1 + s/2))` and buys at `round(mid·(1 − s/2))`, with `s ≈ 8%`. Prices are whole numbers with a minimum of 1.
+- **Spread:** the post sells at `round(mid·(1 + s/2))` and buys at `round(mid·(1 − s/2))`, with `s = 8%`. Prices are whole numbers with a minimum of 1, and the sell price is always at least 1 above the buy price (otherwise rounding gives cheap goods like water no spread at all).
 - **Stock is unlimited in v1,** and player trades don't move prices. The hold capacity is the only limit on trade size.
 - **Initial state:** each price starts at a random point drawn from that long-run spread, so the market isn't flat when the server starts.
 - **Normal samples** come from Box–Muller on the market's own seeded PRNG. The PRNG state is part of the market state so it can be persisted later.
 
 ### Net worth (leaderboard)
-Net worth is money plus cargo. Each cargo unit is valued at the **mean buy price (what posts pay) across the posts that trade that good**. That is fair and stable, and it doesn't depend on where the player is standing.
+Net worth is money plus cargo. Each cargo unit is valued at the **mean buy price (what posts pay) across the posts that trade that good**. That is fair and stable, and it doesn't depend on where the player is standing. It's rounded to a whole number.
+
+## Trade validation
+
+The rules live in `shared/trade.js` (`checkTrade`, `applyTrade`), so the client can grey out what it can't do and size "max" orders. Only the server's result changes money or cargo. The server refuses a trade when:
+
+- the player isn't standing in that post's zone, **by the server's position** (the tile under the hitbox's centre column and feet row is inside `post.zone`);
+- the post doesn't trade that good, or the good doesn't exist;
+- the quantity isn't a whole number in 1…1000, or the side isn't `buy`/`sell`;
+- buying: the cost is more than the player's money, or the goods don't fit in the hold (`size × qty` on top of what's carried);
+- selling: the player carries fewer units than that.
+
+A trade fills completely at the price at the moment the server handles it (in v1, a market tick can land between the player seeing a price and the order arriving). The answer carries the unit price and the new wallet.
 
 ### v1 market state (plain data)
 ```js
@@ -105,13 +117,14 @@ In v3, prices come from actual production and consumption.
 ## Tests
 
 - `test/market.test.js`: over 100k simulated ticks, prices stay within the expected band, and there are no NaN, zero or infinite prices.
-- `test/trade.test.js`: validation (out of zone, not enough money, hold full, good not traded here). In v2: unit-by-unit pricing and stock floors.
+- `test/market.test.js` also checks subsets (4–6 goods, every good at ≥ 2 posts), bias range, determinism and a JSON round trip of the state mid-run, the half-life of a displaced price, and net-worth values.
+- `test/trade.test.js`: validation (out of zone, not enough money, hold full, good not traded here), `maxQty`, and a server-side trade that's refused once the player walks out of the zone. In v2: unit-by-unit pricing and stock floors.
 
 ## Status
 
 | Milestone | Scope | State |
 |---|---|---|
-| M4 | goods catalog, per-post subsets and bias, v1 random walk, spread, trade validation, net-worth leaderboard | not started |
+| M4 | goods catalog, per-post subsets and bias, v1 random walk, spread, trade validation, net-worth leaderboard | **done** 2026-09-30 (`server/market.js`, `shared/trade.js`) |
 | M6 | v2 stock, scarcity pricing, slippage, drift | not started |
 | M7 | v3 industries, population, econ-sim tool | not started |
 

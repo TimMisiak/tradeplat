@@ -159,7 +159,7 @@ Art completion is separate from renderer/gameplay implementation.
 | Effects | Not started: dust `puff`, splat `burst` and `stain` |
 | Post sign | **Done and visually approved:** postSign `idle`; neutral grayscale, exported and registered |
 | Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
-| Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. Enemies and fx come in M5, icons in M4 |
+| Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. **Post signs and goods icons: live since M4** (signs tinted with the post color in each doorway; icons in the trade menu, from the UI atlas, with a flat swatch until a good's PNG is in the manifest). Enemies and fx come in M5 |
 
 ### Solid ground — first style pass
 

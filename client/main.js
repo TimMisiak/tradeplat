@@ -2,13 +2,20 @@
 // Online: the server's world (seed from the welcome message), own movement predicted
 // and reconciled, other players drawn as ghosts (ARCHITECTURE.md § Netcode).
 // Dev overrides play offline: ?seed=N generates locally, ?map=test loads the M1 test level.
+// Trading (M4): prices arrive while standing in a post's zone; E opens the trade menu,
+// which sends orders to the server and shows the wallet the server reports.
 import { createRenderer, SpriteBatch, WebGPUUnavailableError } from './gpu/renderer.js';
-import { hexToRgba, loadManifest, loadSpriteAtlas, loadTileArt } from './assets.js';
+import { hexToRgba, loadIcons, loadManifest, loadSpriteAtlas, loadTileArt } from './assets.js';
 import { createCamera } from './camera.js';
 import { createInput } from './input.js';
 import { INTERP_TICKS, createGhosts, createNet, createPredictor } from './net.js';
 import { animFor, createAnimator, drawPlayer } from './player-view.js';
 import { createTuningPanel } from './dev/tuning.js';
+import { UiBatch, createTextAtlas } from './ui/text.js';
+import { drawHud } from './ui/hud.js';
+import { closeMenu, createPriceBook, createTradeMenu, drawTradeMenu, menuKey, menuResult, openMenu } from './ui/trade.js';
+import { GOODS } from '../shared/goods.js';
+import { postAt } from '../shared/trade.js';
 import { ANIMS, INPUT, TICK_RATE, TUNING, spawnAt, tuningHash } from '../shared/physics.js';
 import { FLAG, SLOPE, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
 import { createTestMap } from '../shared/maps/test.js';
@@ -82,6 +89,25 @@ async function boot() {
   const playerColors = { player: color('player'), outline: shade(color('sky'), 0.5) };
   // Ghosts: translucent and cooler, behind the local player (DESIGN.md § Multiplayer experience).
   const ghostColors = { player: color('ghost', 0.6), outline: shade(color('sky', 0.6), 0.5), tint: [0.7, 0.78, 0.95, 0.55] };
+  const postColors = (manifest?.palette?.posts ?? []).map((h) => hexToRgba(h));
+  const postColor = (post) => postColors[post.colorIndex % Math.max(1, postColors.length)] ?? color('uiAccent');
+  // Goods without icon art get a swatch in a post color (distinct, and in the palette).
+  const iconColor = (id) => postColors[GOODS.findIndex((g) => g.id === id) % Math.max(1, postColors.length)] ?? color('uiText');
+  const uiColors = {
+    panel: color('uiPanel', 0.94),
+    panelSoft: color('uiPanel', 0.7),
+    text: color('uiText'),
+    dim: shade(color('uiText'), 0.6),
+    accent: color('uiAccent'),
+    selRow: color('uiAccent', 0.22),
+    money: color('money'),
+    good: [0.55, 0.85, 0.55, 1],
+    bad: color('hazard'),
+    shadow: [0, 0, 0, 0.6],
+  };
+  const icons = await loadIcons(manifest);
+  const ui = new UiBatch();
+  let uiScale = 0;
 
   const panel = createTuningPanel();
   const params = new URLSearchParams(location.search);
@@ -99,11 +125,16 @@ async function boot() {
   const styles = tileStyles(color, art);
 
   // World: loaded from the server's seed, or from a dev override.
-  /** @type {{map: import('../shared/tiles.js').TileMap, spawn: {tx: number, ty: number}, seed: number | null, label: string} | null} */
+  /** @type {{map: import('../shared/tiles.js').TileMap, posts: import('../shared/worldgen.js').Post[], spawn: {tx: number, ty: number}, seed: number | null, label: string} | null} */
   let world = null;
   /** @type {ReturnType<typeof createPredictor> | null} */
   let pred = null;
   const ghosts = createGhosts();
+  const book = createPriceBook();
+  const menu = createTradeMenu();
+  /** The post we're standing in (by our predicted position), and when we walked in. */
+  let here = null;
+  let enteredAt = 0;
   /** id → animator, so each ghost's animation plays from its own start. */
   const ghostAnims = new Map();
   const TUNING_HASH = tuningHash(TUNING);
@@ -115,6 +146,9 @@ async function boot() {
     renderer.setMap(world.map, styles);
     pred = createPredictor(world.map, spawnAt(world.spawn.tx, world.spawn.ty, tuning), tuning);
     ghosts.clear();
+    book.clear();
+    closeMenu(menu);
+    here = null;
     camera.snap(...center(pred.cur), world.map);
     console.info(`[world] ${world.label}`);
   }
@@ -131,14 +165,14 @@ async function boot() {
       return false;
     }
     const post = gen.posts[gen.spawnPost];
-    useWorld({ map: gen, spawn: post.spawn, seed, label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}` });
+    useWorld({ map: gen, posts: gen.posts, spawn: post.spawn, seed, label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}` });
     return true;
   }
 
   const net = createNet({ name: params.get('name') ?? 'Trader' });
   if (params.get('map') === 'test') {
     const map = createTestMap();
-    useWorld({ map, spawn: map.markers['@'][0], seed: null, label: 'M1 test map' });
+    useWorld({ map, posts: [], spawn: map.markers['@'][0], seed: null, label: 'M1 test map' });
   } else if (params.has('seed')) {
     useSeed(Number(params.get('seed')) >>> 0, null);
   } else {
@@ -165,6 +199,8 @@ async function boot() {
       }
       ghosts.add(msg.tick, msg.g);
     });
+    net.onPrices.push((msg) => book.add(msg, performance.now()));
+    net.onTradeResult.push((msg) => menuResult(menu, msg));
   }
 
   let acc = 0;
@@ -185,7 +221,8 @@ async function boot() {
     if (!world) {
       // Waiting for the server's seed.
       batch.clear();
-      renderer.frame({ cam: [0, 0], sprites: batch });
+      ui.clear();
+      renderer.frame({ cam: [0, 0], sprites: batch, ui });
       requestAnimationFrame(frame);
       return;
     }
@@ -197,12 +234,21 @@ async function boot() {
     if (reset && !resetHeld) respawnQueued = true;
     resetHeld = reset;
 
+    // Trade menu keys. While it's open it takes the keyboard, so the player stands
+    // still (the world keeps running).
+    const nowMs = performance.now();
+    for (const code of input.presses()) {
+      if (menu.open) menuKey(menu, code, { goods: book.get(menu.postId)?.goods ?? null, wallet: net.wallet, send: (o) => (online ? net.sendTrade(o) : 0), now: nowMs });
+      else if ((code === 'KeyE' || code === 'Enter') && here) openMenu(menu, here.id);
+    }
+
     // Fixed-step simulation: predict each tick and send its input.
     acc += dt;
     let firstSeq = 0;
     while (acc >= TICK_S) {
       acc -= TICK_S;
-      const bits = input.sample() | (respawnQueued ? INPUT.RESPAWN : 0);
+      const sampled = input.sample();
+      const bits = (menu.open ? 0 : sampled) | (respawnQueued ? INPUT.RESPAWN : 0);
       respawnQueued = false;
       const seq = pred.advance(bits);
       if (!firstSeq) firstSeq = seq;
@@ -214,6 +260,10 @@ async function boot() {
     }
     pred.decay(dt);
 
+    const at = postAt(world.posts, pred.cur, tuning);
+    if (at !== here) { here = at; enteredAt = nowMs; }
+    if (menu.open && menu.postId !== here?.id) closeMenu(menu);
+
     // Render, interpolating between the last two ticks
     const { prev, cur, err } = pred;
     const alpha = acc / TICK_S;
@@ -222,6 +272,14 @@ async function boot() {
     const { cam } = camera;
 
     batch.clear();
+    ui.clear();
+    const scale = Math.max(1, Math.round(renderer.viewport.scale));
+    if (scale !== uiScale) {
+      uiScale = scale;
+      ui.setAtlas(createTextAtlas(scale, icons));
+    }
+    const cx = Math.round(cam.x), cy = Math.round(cam.y);
+    drawPosts(world.posts, cx, cy);
     const shown = online ? ghosts.sample(net.serverTick(now) - INTERP_TICKS) : [];
     for (const g of shown) {
       let a = ghostAnims.get(g.id);
@@ -229,6 +287,8 @@ async function boot() {
       const name = ANIMS[g.anim] ?? 'idle';
       const pose = { onGround: name === 'idle' || name === 'run', wallDir: g.facing, facing: g.facing };
       drawPlayer(batch, g, pose, a.update(name, now / 1000), ghostColors, sprites.player, map);
+      const tag = net.names.get(g.id);
+      if (tag) ui.textCenter(Math.round(g.x + tuning.width / 2 - cx), Math.round(g.y - cy) - 20, tag, uiColors.dim, uiColors.shadow);
     }
     if (ghostAnims.size > shown.length) {
       const ids = new Set(shown.map((g) => g.id));
@@ -236,11 +296,35 @@ async function boot() {
     }
     const anim = animator.update(animFor(cur), now / 1000);
     drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, map, tuning);
-    // Connection indicator, top-left of the view (there's no HUD text until M4)
-    const netColor = net.status === 'connected' ? [0.3, 0.8, 0.4, 0.9] : net.status === 'connecting' ? [0.9, 0.8, 0.3, 0.9] : [0.9, 0.2, 0.2, 0.9];
-    batch.push(Math.round(cam.x) + 4, Math.round(cam.y) + 4, 3, 3, netColor);
+    const netColor = !online ? [0.5, 0.5, 0.5, 0.9] : net.status === 'connected' ? [0.3, 0.8, 0.4, 0.9] : net.status === 'connecting' ? [0.9, 0.8, 0.3, 0.9] : [0.9, 0.2, 0.2, 0.9];
+    drawHud(ui, {
+      wallet: online ? net.wallet : null,
+      post: here,
+      postColor: here && postColor(here),
+      netColor,
+      board: online ? net.board : [],
+      playerId: net.playerId,
+      menuOpen: menu.open,
+      colors: uiColors,
+    });
+    if (menu.open && here) {
+      const prices = book.get(here.id);
+      drawTradeMenu(ui, menu, {
+        post: here,
+        postColor: postColor(here),
+        prices,
+        live: !!prices && prices.at >= enteredAt,
+        offline: !online,
+        wallet: online ? net.wallet : null,
+        book,
+        postName: (id) => world.posts[id]?.name ?? `post ${id}`,
+        now: nowMs,
+        colors: uiColors,
+        iconColor,
+      });
+    }
 
-    renderer.frame({ cam: [cam.x, cam.y], sprites: batch });
+    renderer.frame({ cam: [cam.x, cam.y], sprites: batch, ui });
 
     if (panel.visible) {
       panel.show(
@@ -258,6 +342,28 @@ async function boot() {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+
+  /**
+   * Post signs (tinted with the post's color) hanging in both doorways, and the
+   * post's name over its roof. Only posts near the view are drawn.
+   */
+  function drawPosts(posts, cx, cy) {
+    const sign = sprites.postSign;
+    const frame0 = sign?.anims.idle?.frames[0];
+    for (const post of posts) {
+      const px0 = post.x * TILE_SIZE, px1 = (post.x + post.w) * TILE_SIZE, top = post.y * TILE_SIZE;
+      if (px1 < cx - 64 || px0 > cx + 640 + 64 || top > cy + 360 + 64 || top + post.h * TILE_SIZE < cy - 64) continue;
+      const tint = postColor(post);
+      // The doorway starts under the 3-row wall stub (WORLDGEN.md § Pipeline).
+      const hang = (post.y + 4) * TILE_SIZE + 12;
+      for (const tx of [post.x, post.x + post.w - 1]) {
+        const x = tx * TILE_SIZE + TILE_SIZE / 2;
+        if (frame0) batch.push(x - sign.anchor[0], hang - sign.anchor[1], sign.frame[0], sign.frame[1], tint, frame0);
+        else batch.push(x - 10, hang - 8, 20, 6, tint);
+      }
+      ui.textCenter(Math.round((px0 + px1) / 2 - cx), top - 14 - cy, post.name, tint, uiColors.shadow);
+    }
+  }
 }
 
 boot();

@@ -4,12 +4,14 @@
 // messages doesn't touch game code.
 import { ANIMS, animFor } from './physics.js';
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** Server ticks between snapshots (60 Hz / 3 = 20 Hz). */
 export const SNAPSHOT_EVERY = 3;
 /** Most input ticks one `input` message may carry. */
 export const MAX_INPUT_BATCH = 8;
+/** Server ticks between leaderboard messages (2 s). */
+export const LEADERBOARD_EVERY = 120;
 /** Interest chunks are this many tiles square (ARCHITECTURE.md § Interest management). */
 export const CHUNK_TILES = 32;
 
@@ -22,13 +24,17 @@ export const MSG = Object.freeze({
   HELLO: 'hello', // {name, protocol}
   PING: 'ping', // {c: clientTimeMs}
   INPUT: 'input', // {seq, tick, bits: number[]}: input for ticks seq, seq+1, …; tick = client's estimate of server tick
+  TRADE: 'trade', // {reqId, postId, goodId, qty, side: 'buy'|'sell'}
   // server → client
   WELCOME: 'welcome', // {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash},
-  //                      you: PlayerState, ack, players: [[id, name]]}
+  //                      you: PlayerState, ack, players: [[id, name]], wallet: {money, cargo, hold}}
   PONG: 'pong', // {c: echoed clientTimeMs, s: serverTick (fractional)}
   SNAPSHOT: 'snap', // {tick, ack, you: PlayerState, g: Ghost[]} (see packGhost)
   JOINED: 'joined', // {id, name}
   LEFT: 'left', // {id}
+  PRICES: 'prices', // {postId, tick: market tick, goods: [[goodId, sell, buy]]}: only to players in that post's zone
+  TRADE_RESULT: 'tradeResult', // {reqId, ok, reason?, price?, wallet: {money, cargo, hold}}
+  LEADERBOARD: 'board', // {rows: [[id, name, netWorth]]}, best first
   ERROR: 'error', // {reason}
 });
 

@@ -17,12 +17,17 @@ export function createInput(target = window) {
   const down = new Set();
   // Bits pressed since the last sample. A tap shorter than one tick still counts.
   let latched = 0;
+  // Key presses (KeyboardEvent.code, with auto-repeat) since the last presses() call, for menus.
+  const pressed = [];
 
   const onKeyDown = (e) => {
-    const bit = KEYS[e.code];
-    if (bit === undefined || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target instanceof HTMLElement && e.target.closest('input, select, textarea, button')) return; // dev panel fields
+    if (pressed.length < 32) pressed.push(e.code);
+    const bit = KEYS[e.code];
+    if (bit === undefined) return;
     e.preventDefault(); // stop arrows/space from scrolling
+    if (e.repeat) return;
     down.add(e.code);
     latched |= bit;
   };
@@ -61,6 +66,8 @@ export function createInput(target = window) {
       latched = 0;
       return bits;
     },
+    /** Key presses since the last call, oldest first (menus; includes auto-repeat). */
+    presses: () => pressed.splice(0),
     /** Whether a key (KeyboardEvent.code) is held. For dev keys outside the INPUT map. */
     isDown: (code) => down.has(code),
     dispose() {

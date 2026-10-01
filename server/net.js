@@ -1,9 +1,10 @@
 // WebSocket connection lifecycle and message dispatch. See ARCHITECTURE.md § Netcode.
 import { WebSocketServer } from 'ws';
-import { CHUNK_TILES, MAX_INPUT_BATCH, MSG, PROTOCOL_VERSION, SNAPSHOT_EVERY, WS_PATH, decode, encode, packGhost } from '../shared/protocol.js';
+import { CHUNK_TILES, LEADERBOARD_EVERY, MAX_INPUT_BATCH, MSG, PROTOCOL_VERSION, SNAPSHOT_EVERY, WS_PATH, decode, encode, packGhost } from '../shared/protocol.js';
 import { TUNING, tuningHash } from '../shared/physics.js';
 import { TILE_SIZE } from '../shared/tiles.js';
 import { TICK_RATE } from './game.js';
+import { MARKET_TICKS, cargoValues, netWorth, packQuote, quote } from './market.js';
 
 const MAX_NAME_LEN = 16;
 const MAX_FRAME_BYTES = 4096;
@@ -18,14 +19,28 @@ export function attachNet(httpServer, game) {
   /** Open sockets of players who have said hello. */
   const sockets = new Map();
   const TUNING_HASH = tuningHash(TUNING);
+  /** Player id → the post whose prices it was last sent (-1: none since it left a zone). */
+  const pricedAt = new Map();
 
   function broadcast(frame) {
     for (const ws of sockets.values()) ws.send(frame);
   }
 
   game.onTick.push((tick) => {
-    if (tick % SNAPSHOT_EVERY !== 0 || sockets.size === 0) return;
-    for (const [id, frame] of snapshotFrames(game, tick, sockets)) sockets.get(id).send(frame);
+    if (sockets.size === 0) return;
+    if (tick % SNAPSHOT_EVERY === 0) {
+      for (const [id, frame] of snapshotFrames(game, tick, sockets)) sockets.get(id).send(frame);
+    }
+    // Prices go only to players standing in a post's zone (DESIGN.md § Information):
+    // when they walk in, and after every market tick while they stay.
+    const marketTicked = tick % MARKET_TICKS === 0;
+    for (const [id, ws] of sockets) {
+      const p = game.players.get(id);
+      if (!p || (p.post === pricedAt.get(id) && !marketTicked)) continue;
+      pricedAt.set(id, p.post);
+      if (p.post >= 0) ws.send(pricesFrame(game, p.post));
+    }
+    if (tick % LEADERBOARD_EVERY === 0) broadcast(leaderboardFrame(game));
   });
 
   httpServer.on('upgrade', (req, socket, head) => {
@@ -43,6 +58,7 @@ export function attachNet(httpServer, game) {
     ws.on('close', () => {
       if (!player) return;
       sockets.delete(player.id);
+      pricedAt.delete(player.id);
       game.removePlayer(player.id);
       broadcast(encode(MSG.LEFT, { id: player.id }));
     });
@@ -73,9 +89,11 @@ export function attachNet(httpServer, game) {
             you: player.state,
             ack: player.seq,
             players: [...game.players.values()].filter((p) => p !== player).map((p) => [p.id, p.name]),
+            wallet: player.wallet,
           }));
           broadcast(encode(MSG.JOINED, { id: player.id, name: player.name }));
           sockets.set(player.id, ws);
+          ws.send(leaderboardFrame(game));
           break;
         }
         case MSG.PING:
@@ -86,6 +104,14 @@ export function attachNet(httpServer, game) {
           if (!player || !Array.isArray(msg.bits) || msg.bits.length > MAX_INPUT_BATCH) return;
           game.receiveInput(player, msg.seq, msg.bits);
           break;
+        case MSG.TRADE: {
+          if (!player || !Number.isInteger(msg.reqId)) return;
+          const res = Number.isInteger(msg.postId) && typeof msg.goodId === 'string'
+            ? game.trade(player, { postId: msg.postId, goodId: msg.goodId, qty: msg.qty, side: msg.side })
+            : { ok: false, reason: 'malformed' };
+          ws.send(encode(MSG.TRADE_RESULT, { reqId: msg.reqId, ...res, wallet: player.wallet }));
+          break;
+        }
       }
     });
   });
@@ -113,6 +139,19 @@ export function snapshotFrames(game, tick, connected) {
     out.push([p.id, encode(MSG.SNAPSHOT, { tick, ack: p.seq, you: p.state, g })]);
   });
   return out;
+}
+
+/** The prices message for one post. */
+export function pricesFrame(game, postId) {
+  return encode(MSG.PRICES, { postId, tick: game.market.tick, goods: packQuote(quote(game.market, postId)) });
+}
+
+/** Every player's net worth, best first (ECONOMY.md § Net worth). */
+export function leaderboardFrame(game) {
+  const values = cargoValues(game.market);
+  const rows = [...game.players.values()].map((p) => [p.id, p.name, netWorth(p.wallet, values)]);
+  rows.sort((a, b) => b[2] - a[2] || a[0] - b[0]);
+  return encode(MSG.LEADERBOARD, { rows });
 }
 
 /** Interest chunk of a player's centre. */
