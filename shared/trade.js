@@ -87,6 +87,11 @@ export function checkTrade(w, order, quote) {
   return null;
 }
 
+/** The wallet after a death: all cargo gone, money untouched (DESIGN.md § Cargo, money and death). */
+export function dropCargo(w) {
+  return { ...w, cargo: {}, paid: {} };
+}
+
 /**
  * Apply an allowed trade (checkTrade returned null) and return the new wallet and
  * the unit price used. Pure: the input wallet isn't modified. Buying folds the

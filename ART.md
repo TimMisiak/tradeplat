@@ -89,9 +89,9 @@ Each animation is a **horizontal strip** of equal-sized frames: strip width = fr
 | Sprite | Frame | Anchor | Required anims | Optional | Notes |
 |---|---|---|---|---|---|
 | `player` | 24×24 | 12,24 (feet) | `idle` `run` `jump` `fall` `wallSlide` | `land` `death` | Body about 12×18 px, centred. The hitbox (decided in M1) will be about that size, so keep limbs and hair inside ~16 px. Other players are drawn with the same sprite, desaturated and translucent, so it has to read in greyscale too. `wallSlide` faces the wall with the wall on the **right** |
-| `patroller` | 32×24 art canvas (runtime recommendation still 16×16) | 12,24 (feet) | `walk` | `swing` (new art), `stomped` | Small ninja body with transparent sword room. `swing` has exactly two frames: wind-up and full extension. Runtime spec follow-up below |
-| `flyer` | 16×16 | 8,8 (centre) | `fly` | | Loops in the air. Needs a clear silhouette against the sky |
-| `saw` | 32×32 | 16,16 (centre) | `spin` | | Hazard-red. A 1-frame strip is fine, because the renderer can rotate it |
+| `patroller` | 32×24 | 12,24 (feet) | `walk` | `swing` `stomped` | Small ninja body (hitbox 12×14, centred on the anchor) with transparent room for the sword. `swing` has exactly two frames: frame 0 is the wind-up, shown for 18 ticks, and frame 1 the strike, shown for the 10 ticks the sword hurts (it reaches 14 px past the body). The game picks the swing frame itself, so its `fps` doesn't matter. Between the swing and walking off it shows `walk` frame 0. `stomped` isn't drawn yet (a stomp shows a puff) |
+| `flyer` | 16×16 | 8,8 (centre) | `fly` | | Loops in the air. Hitbox 12×12, centred. Needs a clear silhouette against the sky |
+| `saw` | 32×32 | 16,16 (centre) | `spin` | | Hazard-red. Hitbox is a circle of radius 11 around the anchor. The sprite pass can't rotate quads, so draw the spin as frames (4 or more). A 1-frame strip is drawn mirrored on alternate frames |
 | `dust` | 8×8 | 4,8 | `puff` | | Landing and run dust. Soft alpha is allowed |
 | `splat` | 16×16 | 8,8 | `burst` `stain` | | Death effect. `stain` is a mark left on the level. **Each frame of `stain` is a random variant**, not an animation (set `fps: 1, loop: false`) |
 | `postSign` | 32×16 | 16,16 | `idle` | | Hangs over a post door. It gets tinted with the post's `posts[]` color, so draw it in greys and white |
@@ -155,12 +155,12 @@ Art completion is separate from renderer/gameplay implementation.
 | One-way platforms | **Done and visually approved:** `oneWay`; exported and registered |
 | Spikes | **Done and visually approved:** gray `spike` teeth without a base plate; exported and registered |
 | Trade post tiles | **Done and visually approved:** `postFloor`, `postWall`; all 16 cardinal4 frames exported and registered for each |
-| Patroller | **First pass ready for review:** ninja `walk` (4 frames) and `swing` (2 frames); exported and registered. Optional `stomped` not started |
+| Patroller | **First pass ready for review:** ninja `walk` (4 frames) and `swing` (2 frames); exported and registered, and drawn in game since M5. Optional `stomped` not started |
 | Other enemies and hazards | Not started: flyer `fly`, saw `spin` |
-| Effects | Not started: dust `puff`, splat `burst` and `stain` |
+| Effects | Not started: dust `puff`, splat `burst` and `stain`. M5 draws the death splat, stains and stomp puffs as flat particles until there's art |
 | Post sign | **Done and visually approved:** postSign `idle`; neutral grayscale, exported and registered |
 | Goods icons | Not started: `water`, `grain`, `ore`, `fuel`, `food`, `metal`, `cloth`, `tools`, `meds`, `relics` |
-| Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. **Post signs and goods icons: live since M4** (signs tinted with the post color in each doorway; icons in the trade menu, from the UI atlas, with a flat swatch until a good's PNG is in the manifest). Enemies and fx come in M5 |
+| Renderer support | **Player sprite: live since M1.** **Tile art: live since M2**, checked with throwaway test art: cardinal4 masks, single tiles, transparency showing the sky, and spikes rotated onto floors, ceilings and both walls. A tile keeps its flat palette style until its PNG is in the manifest. **Post signs and goods icons: live since M4** (signs tinted with the post color in each doorway; icons in the trade menu, from the UI atlas, with a flat swatch until a good's PNG is in the manifest). **Enemies: live since M5.** Patroller art is drawn (walk, both swing frames, mirrored when facing left). Flyers and saws use their sprites once registered, and flat palette shapes until then: orange flapping boxes for flyers, red toothed discs for saws. The splat sprite isn't used yet |
 
 ### Solid ground — first style pass
 
@@ -225,9 +225,8 @@ does not define the body collision box or the sword attack hitbox.
 
 Sources and static/animated reviews are in [art/patroller/](art/patroller/README.md).
 Runtime strips are in `client/assets/sprites/patroller/`. Visual approval is
-pending. The loader and viewer support the shared larger canvas already;
-the validator currently warns about the old recommended size and unknown `swing`.
-The corresponding runtime-spec and gameplay follow-up is under Open questions.
+pending. Since M5, `SPRITE_SPEC.patroller` is 32×24 with the (12,24) anchor and
+knows `swing`, and the game draws both animations (timing in the sprite table above).
 
 ### Completed player art
 
@@ -256,15 +255,6 @@ Update this status section as each asset set is completed. Unspecified art work
 such as backdrops and player color variants remains under Open questions below.
 
 ## Open questions
-
-- **Ninja patroller runtime spec:** art now supplies a shared 32×24 frame and
-  (12,24) foot anchor for `walk` and the requested two-frame `swing`. Update
-  `SPRITE_SPEC.patroller` from 16×16 / (8,16) and recognize `swing` when adopting
-  this art contract. The atlas loader already accepts this layout. If compact
-  walk frames and larger attack-only frames are preferred, the manifest, loader,
-  validator, viewer, and entity drawing will need per-animation frame/anchor
-  support. Attack trigger, wind-up duration, active frame, recovery, and sword
-  hitbox remain gameplay decisions; padding must not enlarge body collision.
 
 - **Backdrop / parallax layers** behind the tiles: are they wanted, and at what size? Not in the spec yet.
 - **Biome tile variants** (cave vs. surface vs. sky-island terrain) depend on [WORLDGEN.md](WORLDGEN.md#open-questions) biomes. Until that's decided, there is one `solid` style.

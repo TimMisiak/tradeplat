@@ -36,7 +36,7 @@ The target is Super Meat Boy: fast, precise and forgiving where it matters.
 | Wall jump | Kicks you up and away; input briefly locked away from the wall | ~8 frame lock |
 | Terminal velocity | Caps fall speed so collisions stay readable and stable | ≤ 1 tile/frame |
 
-All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. Edits apply only in the offline dev worlds (`?seed=N` or `?map=test`). Online, the server's physics is authoritative, so the client uses `TUNING` and the panel says your edits are ignored. **R** respawns (a dev convenience until M5). `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
+All of these constants live in a single tuning table (`TUNING` in `shared/physics.js`), which both client and server import. In game, the **\` (backquote) key** opens a dev panel that edits them live, shows the physics state, and copies the values to paste back into `TUNING`. Edits persist only in that browser. Edits apply only in the offline dev worlds (`?seed=N` or `?map=test`). Online, the server's physics is authoritative, so the client uses `TUNING` and the panel says your edits are ignored. **R** gives up: you die on the spot and respawn at your last post, losing your cargo like any other death. It's there for when you're stuck. `test/testmap.test.js` fails if a tuning change makes any section of the test level impossible.
 
 **Ramps.** The world has 45° ramps, and the generator turns every 1-tile floor step into one ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline)), so hills and tunnels can be run up and down at full speed without jumping. Horizontal speed is the same on a ramp as on flat ground. A ramp's tall side is a wall. Precision challenges come from gaps, walls and hazards, not from staircases.
 
@@ -49,14 +49,15 @@ Controls: keyboard first (arrows/WASD move, Space/Z/K jump, E/Enter interact). G
 - Every unit of every **good** takes one slot in the hold ([ECONOMY.md § Goods](ECONOMY.md#goods-catalog)).
 - The **hold** has a fixed capacity, 20 units to start. Hold upgrades bought at posts are a candidate money sink later.
 - **Money** has no weight or size and is never lost.
-- **When you die, you lose all your cargo.** You respawn instantly (after a short Meat Boy-style fade/restart) at the **last trade post you visited**. Your money is untouched.
-- There's no life counter and no cooldown. The only penalties are the lost cargo and the time it takes to get back.
+- **When you die, you lose all your cargo.** You respawn almost at once at the **last trade post you visited** (the last post zone you stood in, or the spawn post if you haven't been anywhere yet). Your money is untouched.
+- Dying is Meat Boy-style: you burst into a splat with a little screen shake, the screen fades to black, and you're back at the post 40 ticks (~0.7 s) after you died. The splat leaves a stain on the level for a minute and a half. A message says what killed you and how much cargo you lost.
+- One touch of a hazard or enemy kills. There's no health, no life counter and no cooldown. The only penalties are the lost cargo and the time it takes to get back.
 
 ## Trade posts
 
 - Trade posts are structures placed in the world by the generator. Each one has a sheltered **zone** and a safe landing platform.
 - Standing in the zone and pressing interact (E/Enter) opens the **trade UI**. It's drawn in-canvas (see [ARCHITECTURE.md § UI](ARCHITECTURE.md#ui)) and controlled with the keyboard: ↑/↓ (W/S) pick a good, ←/→ (A/D, or 1/2/3) pick ×1 / ×5 / max, **Z** (or B) buys and **X** (or V) sells. Esc, E, Enter or Q closes it. ×5 is clamped to what you can afford and fit, so it never fails for being too big. The menu lists the post's goods with its buy and sell price, then any good you carry that the post doesn't trade, marked "not trading". Each row shows how many you carry and the average price you paid for them ([ECONOMY.md § Trade validation](ECONOMY.md#trade-validation)), and the menu shows what the selected order would cost or pay.
-- **The world doesn't pause.** The simulation keeps running while the UI is open. While it's open the menu takes the keyboard, so your character stands still. If anything moves you out of the zone (a respawn, say), the menu closes. Post zones are free of hazards and enemy spawns, but a flyer can wander close to the edge.
+- **The world doesn't pause.** The simulation keeps running while the UI is open. While it's open the menu takes the keyboard, so your character stands still. If anything moves you out of the zone (a respawn, say), the menu closes. Nothing that can hurt you comes within 6 tiles of a post (no spikes, and no enemy's path or sword), so a post is always safe.
 - The HUD shows money, hold used/capacity and the post you're standing in. A leaderboard of net worth (top 5, plus your own rank if lower) sits top-right.
 - Each post stocks a **random subset** of the catalog. Which goods it stocks, and whether it only buys or sells some of them, sets up the trade routes.
 - Each post has a generated name and a color identity, so you can tell them apart at a glance. Its name floats over the roof and a sign in its color hangs in each doorway.
@@ -67,13 +68,16 @@ Enemies are **obstacles, not a combat system**. The platformer is about avoiding
 
 | Kind | Behaviour | Killable |
 |---|---|---|
-| Spikes | Static tile; touching one kills you | no |
-| Saw | Static or moving on a fixed track; kills on contact | no |
-| Patroller | Walks back and forth along the length of its platform | yes, by stomping; bounces you up |
-| Flyer | Follows a sine or loop path around its anchor | no (v1) |
+| Spikes | Static tile. The teeth point away from the rock the spike sits on, and only they hurt: the 10 px nearest the base | no |
+| Saw | Moves up and down across a low passage, easing at the ends, every 1.7–2.7 s. You time your run under it. Round hitbox, 11 px radius | no |
+| Patroller | Walks back and forth along its platform at 0.5–1 px/tick. At each end it stands for 0.8 s and swings its sword the way it was walking: 0.3 s of wind-up (the warning), then 1/6 s with the sword out, reaching 14 px past its body | yes, by stomping |
+| Flyer | Loops around its anchor in an ellipse or a figure-8, every 2.5–5 s | no (v1) |
 
+- **Stomping:** land on a patroller's head while falling (your feet within 6 px of its top on the tick before) and it dies. You bounce off like a jump: hold jump for the full bounce, or let go for a short one. Touching it any other way, or its sword, kills you.
+- **Forgiveness:** what hazards and enemies hit is your body 2 px narrower on each side and 3 px shorter at the top. The feet count all the way down, so stomps and floor spikes are judged where your feet are.
+- **What worldgen promises** ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline) stage 5): floor spikes come in runs of 1–3 with flat ground and headroom on both sides, so you can always jump them. Spikes never cut off a post or make a pit you can't climb out of. Saws only cross passages tall enough to run under when they're up, and patrollers only walk runs of at least 4 tiles.
 - Enemies appear at **spawner points** placed by world generation ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline)). Spawner density goes up with distance from posts, so the middle of a route is the most dangerous part.
-- A killed enemy **respawns** from its spawner a set time later (e.g. 20 s).
+- A killed enemy **respawns** 20 s later, wherever its path has it by then. It blinks for its first second back and is harmless while it does, so it can't kill you by appearing on top of you.
 - All enemy motion is a **deterministic function of its spawn parameters and the server tick**. That lets every client predict enemies exactly with almost no network traffic ([ARCHITECTURE.md § Netcode](ARCHITECTURE.md#netcode)).
 - Later enemy ideas: turrets with deterministic projectile patterns, chasers (harder to network, because they depend on where the player is), and hazards that change with time of day.
 
@@ -94,9 +98,9 @@ Flat-colored tiles and simple sprite quads with a readable palette: terrain is m
 |---|---|
 | Core loop | designed |
 | Movement feel | built (M1); tuning in progress using the \` panel |
-| Cargo / death | cargo, money and hold built (M4); death and cargo loss in M5 |
+| Cargo / death | cargo, money and hold built (M4). Death, cargo loss, respawn at the last post, the R give-up key, splat, stains, shake, fade and the death message built (M5) |
 | Trade posts / UI | built (M4): trade menu, HUD, leaderboard, price memory with ages, post signs and names |
-| Enemies v1 | designed; M5 |
+| Enemies v1 | built (M5): spikes, saws, patrollers (stomp, sword swing), flyers |
 | Multiplayer ghosts | built (M3): translucent, tinted, interpolated. Name tags since M4 |
 
 ## Open questions
@@ -108,3 +112,5 @@ Flat-colored tiles and simple sprite quads with a readable palette: terrain is m
 - **PvP:** stomping other players? Stealing cargo? Only in opt-in zones? This affects netcode a lot (see [ARCHITECTURE.md § PvP later](ARCHITECTURE.md#pvp-later)).
 - **Checkpoints:** is "last visited post" enough on long routes, or do we need checkpoints between posts that you can't trade at?
 - **Stomp on flyers:** should flyers become killable once there's a reason to kill them?
+- **Enemy tuning:** densities, speeds and the patroller's swing timing are first guesses (constants in `shared/enemies.js` and the rates in `shared/worldgen.js`). Playtest them, especially how dangerous the middle of a route feels compared with near posts.
+- **Invulnerability after respawn:** posts have no hazards nearby, so there's none. Revisit if spawners ever come close to posts.

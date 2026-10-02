@@ -4,19 +4,26 @@
 // Dev overrides play offline: ?seed=N generates locally, ?map=test loads the M1 test level.
 // Trading (M4): prices arrive while standing in a post's zone; E opens the trade menu,
 // which sends orders to the server and shows the wallet the server reports.
+// Hazards (M5): enemies are computed from the world's spawners at the predicted
+// tick; deaths are predicted (splat, fade, respawn) and the server's `died` brings
+// the emptied wallet.
 import { createRenderer, SpriteBatch, WebGPUUnavailableError } from './gpu/renderer.js';
 import { hexToRgba, loadIcons, loadManifest, loadSpriteAtlas, loadTileArt } from './assets.js';
 import { createCamera } from './camera.js';
 import { createInput } from './input.js';
-import { INTERP_TICKS, createGhosts, createNet, createPredictor } from './net.js';
+import { INTERP_TICKS, createGhosts, createKillBook, createNet, createPredictor } from './net.js';
 import { animFor, createAnimator, drawPlayer } from './player-view.js';
+import { drawEnemies } from './enemy-view.js';
+import { createFx, fadeAlpha } from './fx.js';
 import { createTuningPanel } from './dev/tuning.js';
 import { UiBatch, createTextAtlas } from './ui/text.js';
 import { drawHud } from './ui/hud.js';
 import { closeMenu, createPriceBook, createTradeMenu, drawTradeMenu, menuKey, menuResult, openMenu } from './ui/trade.js';
 import { GOODS } from '../shared/goods.js';
 import { postAt } from '../shared/trade.js';
-import { ANIMS, INPUT, TICK_RATE, TUNING, spawnAt, tuningHash } from '../shared/physics.js';
+import { ANIMS, INPUT, TICK_RATE, TUNING, tuningHash } from '../shared/physics.js';
+import { enemyAt } from '../shared/enemies.js';
+import { createSim, spawnPlayer } from '../shared/sim.js';
 import { FLAG, SLOPE, TILE, TILES, TILE_SIZE } from '../shared/tiles.js';
 import { createTestMap } from '../shared/maps/test.js';
 import { GEN_VERSION, generateWorld } from '../shared/worldgen.js';
@@ -24,6 +31,11 @@ import { GEN_VERSION, generateWorld } from '../shared/worldgen.js';
 const TICK_S = 1 / TICK_RATE;
 /** Longest frame gap we simulate. Beyond this (tab in background) time is dropped. */
 const MAX_FRAME_S = 0.25;
+/** Online, the predicted enemy tick is re-anchored to the server clock when it drifts this far. */
+const TICK_RESYNC = 4;
+/** How long the "you died" message stays up, ms. */
+const TOAST_MS = 3500;
+const CAUSE_TEXT = { spikes: 'the spikes', patroller: 'a patroller', flyer: 'a flyer', saw: 'a saw' };
 
 function showFallback(html) {
   const el = document.getElementById('fallback');
@@ -105,6 +117,10 @@ async function boot() {
     bad: color('hazard'),
     shadow: [0, 0, 0, 0.6],
   };
+  const enemyColors = { enemy: color('enemy'), hazard: color('hazard'), dark: shade(color('sky'), 0.5), steel: [0.82, 0.84, 0.86, 1] };
+  const splatColor = shade(color('hazard'), 0.8);
+  const puffColor = color('uiText');
+  const fx = createFx();
   const icons = await loadIcons(manifest);
   const ui = new UiBatch();
   let uiScale = 0;
@@ -125,10 +141,26 @@ async function boot() {
   const styles = tileStyles(color, art);
 
   // World: loaded from the server's seed, or from a dev override.
-  /** @type {{map: import('../shared/tiles.js').TileMap, posts: import('../shared/worldgen.js').Post[], spawn: {tx: number, ty: number}, seed: number | null, label: string} | null} */
+  /** @type {{map: import('../shared/tiles.js').TileMap, posts: import('../shared/worldgen.js').Post[], spawn: {tx: number, ty: number},
+   *   home: number, seed: number | null, label: string, sim: ReturnType<typeof createSim>} | null} */
   let world = null;
   /** @type {ReturnType<typeof createPredictor> | null} */
   let pred = null;
+  const kills = createKillBook();
+  // A stomp (ours, predicted, or anyone's, from the server): a puff where it was.
+  kills.onKill.push((id, tick) => {
+    const sp = world?.sim.spawners[id];
+    if (!sp) return;
+    const e = enemyAt(sp, tick);
+    fx.puff(e.box.x + e.box.w / 2, e.box.y + e.box.h / 2);
+  });
+  /** Whether the local player was dead last frame, and when it last respawned (ms). */
+  let wasDead = false;
+  let respawnedAt = -1e9;
+  /** The last death message from the server, shown for a few seconds. */
+  let toast = null;
+  /** Ghost id → whether it was dead in the last frame (to splat once). */
+  const ghostDead = new Map();
   const ghosts = createGhosts();
   const book = createPriceBook();
   const menu = createTradeMenu();
@@ -142,13 +174,16 @@ async function boot() {
   if (online && panelEdited()) console.warn('[dev] saved tuning-panel edits are ignored online. They apply with ?seed=N or ?map=test');
 
   function useWorld(next) {
-    world = next;
+    world = { ...next, sim: createSim(next.map, next.spawn) };
     renderer.setMap(world.map, styles);
-    pred = createPredictor(world.map, spawnAt(world.spawn.tx, world.spawn.ty, tuning), tuning);
+    kills.reset();
+    pred = createPredictor(world.sim, spawnPlayer(world.sim, world.home, tuning), tuning, kills);
     ghosts.clear();
     book.clear();
+    fx.clear();
     closeMenu(menu);
     here = null;
+    wasDead = false;
     camera.snap(...center(pred.cur), world.map);
     console.info(`[world] ${world.label}`);
   }
@@ -165,14 +200,19 @@ async function boot() {
       return false;
     }
     const post = gen.posts[gen.spawnPost];
-    useWorld({ map: gen, posts: gen.posts, spawn: post.spawn, seed, label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}` });
+    const n = (k) => gen.spawners.filter((sp) => sp.kind === k).length;
+    useWorld({
+      map: gen, posts: gen.posts, spawn: post.spawn, home: gen.spawnPost, seed,
+      label: `seed ${seed} (${gen.hash}, ${ms.toFixed(0)} ms), spawn at ${post.name}, ` +
+        `${gen.stats.spikes} spikes, ${n('patroller')} patrollers, ${n('flyer')} flyers, ${n('saw')} saws`,
+    });
     return true;
   }
 
   const net = createNet({ name: params.get('name') ?? 'Trader' });
   if (params.get('map') === 'test') {
     const map = createTestMap();
-    useWorld({ map, posts: [], spawn: map.markers['@'][0], seed: null, label: 'M1 test map' });
+    useWorld({ map, posts: [], spawn: map.markers['@'][0], home: -1, seed: null, label: 'M1 test map' });
   } else if (params.has('seed')) {
     useSeed(Number(params.get('seed')) >>> 0, null);
   } else {
@@ -185,7 +225,9 @@ async function boot() {
       // The server restarting means a new world; regenerate when the seed changes.
       if (msg.world.seed !== world?.seed && !useSeed(msg.world.seed, msg.world)) return;
       // Every welcome is a new server-side player: start from its state and input tick.
-      pred.reset(msg.you, msg.ack);
+      kills.reset(msg.kills);
+      pred.reset(msg.you, msg.ack, Math.round(net.serverTick() + net.lead()));
+      wasDead = msg.you.dead > 0;
       ghosts.clear();
       camera.snap(...center(pred.cur), world.map);
     });
@@ -201,17 +243,22 @@ async function boot() {
     });
     net.onPrices.push((msg) => book.add(msg, performance.now()));
     net.onTradeResult.push((msg) => menuResult(menu, msg));
+    net.onKilled.push((msg) => kills.confirm(msg.id, msg.tick));
+    net.onDied.push((msg) => {
+      const lost = Object.values(msg.lost).reduce((a, b) => a + b, 0);
+      const by = msg.cause === 'gave up' ? 'You gave up' : `Killed by ${CAUSE_TEXT[msg.cause] ?? msg.cause}`;
+      toast = { text: lost ? `${by}. Lost ${lost} cargo` : by, at: performance.now() };
+    });
   }
 
   let acc = 0;
   let last = performance.now();
   let fps = 0;
-  let resetHeld = false;
   let respawnQueued = false;
   const outgoing = [];
 
   // Handles for poking at the client from the dev console.
-  globalThis.game = { renderer, net, tuning, ghosts, get world() { return world; }, get pred() { return pred; }, get player() { return pred?.cur; } };
+  globalThis.game = { renderer, net, tuning, ghosts, kills, get world() { return world; }, get pred() { return pred; }, get player() { return pred?.cur; } };
 
   function frame(now) {
     const dt = Math.min((now - last) / 1000, MAX_FRAME_S);
@@ -228,48 +275,63 @@ async function boot() {
     }
     const map = world.map;
 
-    // R respawns (dev convenience until death/respawn lands in M5). It rides on the
-    // next tick's input, so the server respawns us at the same tick.
-    const reset = input.isDown('KeyR');
-    if (reset && !resetHeld) respawnQueued = true;
-    resetHeld = reset;
-
     // Trade menu keys. While it's open it takes the keyboard, so the player stands
     // still (the world keeps running).
     const nowMs = performance.now();
     for (const code of input.presses()) {
       if (menu.open) menuKey(menu, code, { goods: book.get(menu.postId)?.goods ?? null, wallet: net.wallet, send: (o) => (online ? net.sendTrade(o) : 0), now: nowMs });
       else if ((code === 'KeyE' || code === 'Enter') && here) openMenu(menu, here.id);
+      // R gives up: you die (losing your cargo) and respawn at your last post. It rides
+      // on the next tick's input, so the server does the same at the same tick. Taken
+      // in order with the menu keys, and once per press (not on auto-repeat).
+      else if (code === 'KeyR' && input.tapped('KeyR')) respawnQueued = true;
     }
 
-    // Fixed-step simulation: predict each tick and send its input.
+    // Fixed-step simulation: predict each tick and send its input. Online, enemy
+    // ticks run as far ahead of the server clock as our input will arrive (lead), and
+    // are consecutive within a frame, so one message's ticks are tick, tick+1, ….
     acc += dt;
-    let firstSeq = 0;
+    let firstSeq = 0, firstTick = 0;
+    let nextTick = pred.tick + 1;
+    if (online && net.status === 'connected') {
+      const want = Math.round(net.serverTick(now) + net.lead());
+      if (Math.abs(nextTick - want) > TICK_RESYNC) nextTick = want;
+    }
     while (acc >= TICK_S) {
       acc -= TICK_S;
       const sampled = input.sample();
       const bits = (menu.open ? 0 : sampled) | (respawnQueued ? INPUT.RESPAWN : 0);
       respawnQueued = false;
-      const seq = pred.advance(bits);
-      if (!firstSeq) firstSeq = seq;
+      const seq = pred.advance(bits, nextTick++);
+      if (!firstSeq) { firstSeq = seq; firstTick = pred.tick; }
       outgoing.push(bits);
     }
     if (outgoing.length) {
-      if (online) net.sendInput(firstSeq, outgoing);
+      if (online) net.sendInput(firstSeq, firstTick, outgoing);
       outgoing.length = 0;
     }
     pred.decay(dt);
+    fx.update(dt);
 
     const at = postAt(world.posts, pred.cur, tuning);
     if (at !== here) { here = at; enteredAt = nowMs; }
     if (menu.open && menu.postId !== here?.id) closeMenu(menu);
 
-    // Render, interpolating between the last two ticks
+    // Render, interpolating between the last two ticks (not across a respawn).
     const { prev, cur, err } = pred;
     const alpha = acc / TICK_S;
-    const pos = { x: prev.x + (cur.x - prev.x) * alpha + err.x, y: prev.y + (cur.y - prev.y) * alpha + err.y };
+    const from = prev.dead > 0 && !cur.dead ? cur : prev;
+    const pos = { x: from.x + (cur.x - from.x) * alpha + err.x, y: from.y + (cur.y - from.y) * alpha + err.y };
+    if (cur.dead > 0 && !wasDead) fx.splat(...center(cur), nowMs, true);
+    if (!cur.dead && wasDead) {
+      respawnedAt = nowMs;
+      camera.snap(...center(cur), map);
+    }
+    wasDead = cur.dead > 0;
     camera.update(pos.x + tuning.width / 2, pos.y + tuning.height / 2, cur.vx, dt, map);
-    const { cam } = camera;
+    const [shakeX, shakeY] = fx.shakeOffset();
+    const cam = { x: camera.cam.x + shakeX, y: camera.cam.y + shakeY };
+    const renderTick = pred.prevTick + (pred.tick - pred.prevTick) * alpha;
 
     batch.clear();
     ui.clear();
@@ -280,11 +342,17 @@ async function boot() {
     }
     const cx = Math.round(cam.x), cy = Math.round(cam.y);
     drawPosts(world.posts, cx, cy);
+    fx.drawStains(batch, splatColor, nowMs);
+    drawEnemies(batch, world.sim, kills.view, renderTick, { x: cx - 64, y: cy - 64, w: 640 + 128, h: 360 + 128 }, sprites, enemyColors);
     const shown = online ? ghosts.sample(net.serverTick(now) - INTERP_TICKS) : [];
     for (const g of shown) {
       let a = ghostAnims.get(g.id);
       if (!a) ghostAnims.set(g.id, (a = createAnimator()));
       const name = ANIMS[g.anim] ?? 'idle';
+      const dead = name === 'death';
+      if (dead && ghostDead.get(g.id) === false) fx.splat(g.x + tuning.width / 2, g.y + tuning.height / 2, nowMs);
+      ghostDead.set(g.id, dead);
+      if (dead) continue;
       const pose = { onGround: name === 'idle' || name === 'run', wallDir: g.facing, facing: g.facing };
       drawPlayer(batch, g, pose, a.update(name, now / 1000), ghostColors, sprites.player, map);
       const tag = net.names.get(g.id);
@@ -292,10 +360,14 @@ async function boot() {
     }
     if (ghostAnims.size > shown.length) {
       const ids = new Set(shown.map((g) => g.id));
-      for (const id of ghostAnims.keys()) if (!ids.has(id)) ghostAnims.delete(id);
+      for (const id of ghostAnims.keys()) if (!ids.has(id)) { ghostAnims.delete(id); ghostDead.delete(id); }
     }
     const anim = animator.update(animFor(cur), now / 1000);
-    drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, map, tuning);
+    if (!cur.dead) drawPlayer(batch, pos, cur, anim, playerColors, sprites.player, map, tuning);
+    fx.drawParticles(batch, splatColor, puffColor);
+    const fade = fadeAlpha(cur.dead, (nowMs - respawnedAt) / 1000 * TICK_RATE);
+    if (fade > 0) ui.rect(0, 0, 640, 360, [0, 0, 0, fade]);
+    if (toast && nowMs - toast.at > TOAST_MS) toast = null;
     const netColor = !online ? [0.5, 0.5, 0.5, 0.9] : net.status === 'connected' ? [0.3, 0.8, 0.4, 0.9] : net.status === 'connecting' ? [0.9, 0.8, 0.3, 0.9] : [0.9, 0.2, 0.2, 0.9];
     drawHud(ui, {
       wallet: online ? net.wallet : null,
@@ -305,6 +377,7 @@ async function boot() {
       board: online ? net.board : [],
       playerId: net.playerId,
       menuOpen: menu.open,
+      toast: toast?.text ?? null,
       colors: uiColors,
     });
     if (menu.open && here) {
@@ -330,13 +403,14 @@ async function boot() {
       panel.show(
         `fps ${fps.toFixed(0)}  net ${online ? net.status : 'offline (dev world)'}${net.rtt ? ` ${net.rtt.toFixed(0)}ms` : ''}` +
         `  server tick ${net.serverTick(now).toFixed(0)}\n` +
-        `seq ${pred.seq}  ack ${pred.lastAck}  pending ${pred.pending.length}  mismatches ${pred.mismatches}` +
+        `seq ${pred.seq}  ack ${pred.lastAck}  pending ${pred.pending.length}  mismatches ${pred.mismatches}  enemy tick ${pred.tick}` +
         `  ghosts ${shown.length}/${net.names.size}${online && panelEdited() ? '\ntuning edits ignored online (server tuning). They apply with ?seed=N or ?map=test' : ''}\n` +
         `world ${world.label}\n` +
         `pos ${cur.x.toFixed(1)}, ${cur.y.toFixed(1)}  tile ${Math.floor((cur.x + tuning.width / 2) / TILE_SIZE)}, ${Math.floor((cur.y + tuning.height) / TILE_SIZE)}\n` +
         `vel ${cur.vx.toFixed(2)}, ${cur.vy.toFixed(2)}  anim ${anim.anim}\n` +
         `ground ${cur.onGround ? 'y' : 'n'}  wall ${cur.wallDir}  coyote ${cur.coyote}  buffer ${cur.jumpBuffer}  lock ${cur.wallLock}\n` +
-        'R respawns',
+        `home ${world.posts[cur.home]?.name ?? cur.home}  dead ${cur.dead}  kills ${Object.keys(kills.view).length} (${kills.predicted.length} predicted)\n` +
+        'R gives up (respawn at your last post, cargo lost)',
       );
     }
     requestAnimationFrame(frame);

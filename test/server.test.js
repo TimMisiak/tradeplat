@@ -6,7 +6,8 @@ import { startServer } from '../server/main.js';
 import { cleanName } from '../server/net.js';
 import { resolvePath } from '../server/static.js';
 import { MSG, PROTOCOL_VERSION, WS_PATH, decode, encode } from '../shared/protocol.js';
-import { INPUT, TUNING, stepInput, tuningHash } from '../shared/physics.js';
+import { INPUT, TUNING, tuningHash } from '../shared/physics.js';
+import { stepPlayer } from '../shared/sim.js';
 import { HOLD_CAPACITY, START_MONEY } from '../shared/trade.js';
 
 let server;
@@ -117,11 +118,12 @@ test('inputs are acknowledged with the state a local replay predicts', async () 
   ws.send(encode(MSG.HELLO, { name: 'Cy', protocol: PROTOCOL_VERSION }));
   const { you } = await nextOf(MSG.WELCOME);
   const bits = [...Array(8).fill(INPUT.RIGHT), ...Array(4).fill(INPUT.RIGHT | INPUT.JUMP)];
-  ws.send(encode(MSG.INPUT, { seq: 1, tick: 0, bits: bits.slice(0, 6) }));
-  ws.send(encode(MSG.INPUT, { seq: 7, tick: 0, bits: bits.slice(6) }));
+  const t0 = server.game.tick + 3;
+  ws.send(encode(MSG.INPUT, { seq: 1, tick: t0, bits: bits.slice(0, 6) }));
+  ws.send(encode(MSG.INPUT, { seq: 7, tick: t0 + 6, bits: bits.slice(6) }));
   const snap = await nextOf(MSG.SNAPSHOT, (m) => m.ack === bits.length);
   let s = you;
-  for (const b of bits) s = stepInput(s, b, server.game.world, server.game.spawn);
+  bits.forEach((b, i) => { s = stepPlayer(s, b, t0 + i, server.game.sim, {}); });
   assert.deepEqual(snap.you, s);
   ws.close();
 });
@@ -178,6 +180,27 @@ test('at the spawn post: prices arrive, a trade goes through, the leaderboard co
   const row = board.rows.find(([id]) => id === welcome.playerId);
   assert.equal(row[1], 'Tia');
   assert.ok(row[2] > START_MONEY - ok.price, 'cargo counts toward net worth');
+  ws.close();
+});
+
+test('dying (giving up) loses the cargo: died carries what was lost and the emptied wallet', async () => {
+  const { ws, nextOf } = await openWs();
+  ws.send(encode(MSG.HELLO, { name: 'Dee', protocol: PROTOCOL_VERSION }));
+  const welcome = await nextOf(MSG.WELCOME);
+  assert.deepEqual(welcome.kills, {});
+  assert.deepEqual([welcome.you.dead, welcome.you.home], [0, server.game.world.spawnPost]);
+  const prices = await nextOf(MSG.PRICES);
+  const [goodId] = prices.goods[0];
+  ws.send(encode(MSG.TRADE, { reqId: 1, postId: prices.postId, goodId, qty: 2, side: 'buy' }));
+  const bought = await nextOf(MSG.TRADE_RESULT);
+  assert.equal(bought.ok, true);
+  ws.send(encode(MSG.INPUT, { seq: 1, tick: server.game.tick, bits: [INPUT.RESPAWN] }));
+  const died = await nextOf(MSG.DIED);
+  assert.equal(died.cause, 'gave up');
+  assert.deepEqual(died.lost, { [goodId]: 2 });
+  assert.deepEqual(died.wallet, { ...bought.wallet, cargo: {}, paid: {} });
+  const snap = await nextOf(MSG.SNAPSHOT, (m) => m.ack === 1);
+  assert.ok(snap.you.dead > 0);
   ws.close();
 });
 

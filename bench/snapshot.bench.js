@@ -6,7 +6,8 @@
 import { performance } from 'node:perf_hooks';
 import { createGame } from '../server/game.js';
 import { snapshotFrames } from '../server/net.js';
-import { INPUT, TICK_RATE, step } from '../shared/physics.js';
+import { INPUT, TICK_RATE, TUNING, step } from '../shared/physics.js';
+import { stepPlayer } from '../shared/sim.js';
 import { SNAPSHOT_EVERY } from '../shared/protocol.js';
 
 const game = createGame({ seed: 1 });
@@ -46,3 +47,20 @@ const t0 = performance.now();
 for (let i = 0; i < STEPS; i++) p = step(p, i & 32 ? INPUT.RIGHT : INPUT.LEFT | INPUT.JUMP, game.world);
 const us = (performance.now() - t0) * 1000 / STEPS;
 console.log(`physics: ${us.toFixed(2)} µs/step (64 players at 60 Hz: ${(us * 64 * 60 / 1e4).toFixed(2)}% of one core)`);
+
+// The full per-tick player step (shared/sim.js): physics plus spikes and enemies,
+// next to the spawner with the most neighbours (the worst case for enemy checks).
+const sps = game.world.spawners;
+const busiest = sps.reduce((best, sp) => {
+  const n = sps.filter((o) => Math.abs(o.x - sp.x) < 16 && Math.abs(o.y - sp.y) < 16).length;
+  return n > best.n ? { sp, n } : best;
+}, { sp: sps[0], n: 0 });
+const home = { ...game.spawn, x: busiest.sp.x * 16, y: busiest.sp.y * 16 - TUNING.height };
+let q = home;
+const t1 = performance.now();
+for (let i = 0; i < STEPS; i++) {
+  q = stepPlayer(q, i & 32 ? INPUT.RIGHT : INPUT.LEFT | INPUT.JUMP, i, game.sim, {});
+  if (i % 300 === 0) q = home; // stay among the enemies (deaths and drifting off reset it)
+}
+const us2 = (performance.now() - t1) * 1000 / STEPS;
+console.log(`stepPlayer among ${busiest.n} spawners: ${us2.toFixed(2)} µs/step (64 players at 60 Hz: ${(us2 * 64 * 60 / 1e4).toFixed(2)}% of one core)`);

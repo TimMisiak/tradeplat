@@ -36,5 +36,5 @@ Each decision is written down in one doc, and the others link to it. Every doc e
 | M2 | World generation with the flood-fill reachability check, the tile-texture renderer, and the scrolling camera | WORLDGEN | **done** 2026-09-30 |
 | M3 | Server-authoritative netcode: prediction, reconciliation, and interpolated ghosts | ARCHITECTURE | **done** 2026-09-30. Ghost name tags landed in M4 |
 | M4 | Trade posts, v1 random-walk market, hold capacity, in-canvas trade UI | ECONOMY, DESIGN | **done** 2026-09-30. Also the HUD, net-worth leaderboard, price memory, name tags and post signs |
-| M5 | Hazards and enemies, death, cargo loss, respawn | DESIGN | not started |
+| M5 | Hazards and enemies, death, cargo loss, respawn | DESIGN | **done** 2026-10-01. Spikes, saws, stompable patrollers with a sword swing, flyers; deaths predicted and lag-compensated; splat, stains, fade, death message |
 | M6+ | v2 supply and demand, v3 production tree, persistence, PvP study | ECONOMY, ARCHITECTURE | not started |

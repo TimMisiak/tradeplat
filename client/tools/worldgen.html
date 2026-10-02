@@ -28,6 +28,7 @@
     <label>zoom <select id="zoom"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
     <label><input id="showFill" type="checkbox" checked> reachable</label>
     <label><input id="showRoutes" type="checkbox" checked> routes</label>
+    <label><input id="showEnemies" type="checkbox" checked> enemies</label>
     <a id="play" href="/">play this seed</a>
   </div>
   <div class="legend">
@@ -42,6 +43,8 @@
   <script type="module">
     import { generateWorld, floodFill, GEN_VERSION } from '../../shared/worldgen.js';
     import { TILE } from '../../shared/tiles.js';
+    import { enemyExtent } from '../../shared/enemies.js';
+    const ENEMY_COLORS = { patroller: '#f4892bcc', flyer: '#ffd166cc', saw: '#ff3b5ccc' };
 
     const $ = (id) => document.getElementById(id);
     const COLORS = {
@@ -90,6 +93,14 @@
         ctx.fillStyle = '#5fb3d9';
         for (const path of world.debug.routes) for (const [x, y] of path) ctx.fillRect(x, y, 1, 1);
       }
+      if ($('showEnemies').checked) {
+        // Each spawner's whole reach (enemyExtent), in its kind's color.
+        for (const sp of world.spawners) {
+          const e = enemyExtent(sp);
+          ctx.fillStyle = ENEMY_COLORS[sp.kind];
+          ctx.fillRect(e.x0 / 16, e.y0 / 16, Math.max(1, (e.x1 - e.x0) / 16), Math.max(1, (e.y1 - e.y0) / 16));
+        }
+      }
       ctx.font = '8px ui-monospace, monospace';
       for (const p of world.posts) {
         ctx.strokeStyle = p.id === world.spawnPost ? '#f2c14e' : '#e8e6df';
@@ -101,13 +112,14 @@
       $('stats').textContent =
         `genVersion ${GEN_VERSION}  seed ${world.seed}  attempt ${world.attempt}  hash ${world.hash}  ${ms.toFixed(0)} ms\n` +
         `${world.posts.length} posts  spawn: ${world.posts[world.spawnPost].name}  routes ${world.debug.edges.length}  ` +
-        `platforms ${world.stats.platforms}  repair tunnels ${world.stats.tunnels}  pit tiles filled ${world.stats.filled}  reachable tiles ${world.stats.reachable}`;
+        `platforms ${world.stats.platforms}  repair tunnels ${world.stats.tunnels}  pit tiles filled ${world.stats.filled}  reachable tiles ${world.stats.reachable}\n` +
+        `spike tiles ${world.stats.spikes} (runs removed by the check ${world.stats.spikesRemoved})  patrollers ${world.stats.patrollers}  flyers ${world.stats.flyers}  saws ${world.stats.saws}`;
     }
 
     $('prev').onclick = () => { $('seed').value = Math.max(0, Number($('seed').value) - 1); draw(); };
     $('next').onclick = () => { $('seed').value = Number($('seed').value) + 1; draw(); };
     $('rand').onclick = () => { $('seed').value = crypto.getRandomValues(new Uint32Array(1))[0]; draw(); };
-    for (const id of ['seed', 'zoom', 'showFill', 'showRoutes']) $(id).onchange = draw;
+    for (const id of ['seed', 'zoom', 'showFill', 'showRoutes', 'showEnemies']) $(id).onchange = draw;
     draw();
   </script>
 </body>

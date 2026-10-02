@@ -15,7 +15,7 @@ This doc covers how a seed becomes a playable map. Game rules are in [DESIGN.md]
 - All randomness comes from `shared/rng.js`: **sfc32**, seeded from a 32-bit seed through a splitmix step. Each pipeline stage gets its own **sub-stream** (`rng.fork("terrain")`, `rng.fork("posts")`, …). Changing one stage then doesn't reshuffle the others, which makes tuning a lot easier.
 - Noise is **integer-hash value noise**: `Math.imul`-based hashing, then smoothstep interpolation using only `+ − ×`. There are no `Math.sin`/`Math.pow` calls ([ARCHITECTURE.md § Determinism](ARCHITECTURE.md#determinism)).
 - `genVersion` is a constant in `worldgen.js`. It is **bumped whenever the output changes for the same seed**. The client refuses to play if its version differs from the server's.
-- After generating, both sides compute an FNV-1a **map hash** over the tile bytes and the POI list. The client compares its hash with the server's `welcome` message. A test asserts a fixed golden hash for a fixed seed.
+- After generating, both sides compute an FNV-1a **map hash** over the tile bytes, the POI list and the spawners. The client compares its hash with the server's `welcome` message. A test asserts a fixed golden hash for a fixed seed.
 
 ## Map
 
@@ -54,17 +54,22 @@ Stages run in order, and each takes the map plus its own RNG sub-stream.
    - The path is walked **both ways**, so every drop is also a climb with a ladder, and each route can be run in either direction. A climb is measured from the row the feet rest on, in the path point's own column.
    - `ENVELOPE` lives in `worldgen.js` and deliberately does **not** read `TUNING`, so tweaking the movement feel doesn't change any maps. Instead, `test/worldgen.test.js` checks that the current physics can still climb a `stepUp` ledge and clear a `gap` jump.
    - This makes routes *likely* jumpable even though the v1 check doesn't prove it.
-5. **Hazards and spawners.**
-   - Spikes go on pit floors and the undersides of some ledges.
-   - **Patroller** spawners go on flat runs of at least 4 standable tiles.
-   - **Flyer** spawners go in open air pockets (a minimum empty radius is required).
-   - Density goes up with distance from the nearest post and is zero inside `NO_SPAWN` areas ([DESIGN.md § Enemies](DESIGN.md#enemies-and-hazards-v1)).
-   - Spawners are recorded as data: `{id, kind, x, y, params}`. [`shared/enemies.js`](ARCHITECTURE.md#enemies) turns them into motion.
+5. **Hazards and spawners.** This runs **last**, inside and after the pit fill (stage 8), because it needs the final floors and the pit check's `reached` tiles. It keeps its number because it's the stage that adds danger. Spikes go in after the first fill, so the pit check that confirms the fill confirms the spikes too. Spawners go on the final map.
+   - **Danger** at a tile is 0 inside any post's `noSpawn` rect, rising linearly to 1 at 40 tiles from the nearest one. Every placement chance below is multiplied by it, so the middle of a route is the most dangerous part ([DESIGN.md § Enemies](DESIGN.md#enemies-and-hazards-v1)).
+   - **Floor spikes:** runs of 1–3 on plain rock, with an open, reached, flat ledge on both sides and 3 open rows over the whole stretch, so the run can always be jumped (`ENVELOPE.gap` is 4). Chance 6% per spot at full danger.
+   - **Ceiling spikes:** runs of 1–4 hanging from plain rock with at least 5 open rows below, so they only show up in big rooms and never in a 4-row route corridor. Chance 4%.
+   - **Spike check:** spikes are hazards `findTraps` can't stand on or pass through. So a run that removed the only way out of somewhere shows up as a new trap, and one that cut off a post shows up as a post that was reached before and isn't now. Either way, the spike runs near the problem come out and it checks again, wider each round. From the fifth round it removes every spike, and if even that fails, the attempt fails. (A post the jump model couldn't reach before any spikes, the known gap below, doesn't count.) In 200 test seeds no spike run has needed removing yet.
+   - **Saws:** a vertical track across a low passage. Floor (or a ramp) under it, a ceiling 4–6 rows up, and the passage open over the columns either side too, since a saw is wider than a tile. Period 100–160 ticks. The gap under a raised saw is tall enough to run through. Chance 60%, at least 24 tiles between saws.
+   - **Patrollers:** flat runs of at least 4 standable tiles (open feet row and 2 rows of headroom over plain rock, reached by the pit check). They walk 6–12 tiles of it at 0.5, 0.75 or 1 px/tick. Chance 80% per run.
+   - **Flyers:** tried on a 7-tile grid (jittered ±2). The whole path (2–4 tiles across, 1–2 up and down) plus a tile of margin must be open air, with reached ground within 8 rows straight below and open air down to it, so they hang around where people walk. An ellipse or a figure-8, period 150–300 ticks. Chance 50%.
+   - Spawners keep at least 8 tiles apart (4 for a saw next to something else), and nothing an enemy can reach (its sword included, from `enemyExtent`) may overlap a post's `noSpawn` rect.
+   - Spawners are recorded as data: `{id, kind, x, y, params}`, with `id` their index. [`shared/enemies.js`](ARCHITECTURE.md#enemies) turns them into motion. They're part of the map hash.
+   - Per world: about 230 spike tiles, 32 patrollers, 24 flyers and 11 saws. Saws are limited by how few low passages there are, not by their chance.
 6. **Reachability check and repair** (below).
 7. **Rampify.** Every 1-tile floor step anywhere (surface, route staircases, repair tunnels, natural cave floors) becomes a 45° ramp. The step needs two open rows of headroom above it, and the ground must continue past it. 1-wide bumps and post tiles are left alone. The conditions are read from a snapshot, so ramps placed in this pass don't affect each other. About 2,200 ramps per world.
 8. **Pit fill** ([Pits](#pits)). Runs on the final ramped map, since ramps change where you can walk.
 
-The output is a plain object: `{version, seed, attempt, w, h, tiles, posts[], spawnPost, spawners[], hash, stats, debug}`. `stats` holds the number of platforms, repair tunnels, pit tiles filled and ramps, and the reachable tile count. `debug.routes` holds the carved paths, used by the preview tool. Neither is part of the hash.
+The output is a plain object: `{version, seed, attempt, w, h, tiles, posts[], spawnPost, spawners[], hash, stats, debug}`. `stats` holds the number of platforms, repair tunnels, pit tiles filled, ramps, spike tiles, spike runs removed by the check, and spawners of each kind, plus the reachable tile count. `debug.routes` holds the carved paths, used by the preview tool. Neither is part of the hash.
 
 ### Where the seed comes from
 
@@ -117,17 +122,19 @@ Because this uses the real step function, it stays correct when the movement tun
 
 ## Tooling
 
-- **`/tools/worldgen.html`** is a dev-only preview page. It draws the whole map (1 px per tile, zoom 1–4×) with posts and their names, the spawn post, the flood-fill region, and the carved route paths. It shows the generation stats, has seed input with forward/back/random buttons, and a "play this seed" link (`/?seed=N`). It's a DOM page on purpose: it's a tool, not the game.
+- **`/tools/worldgen.html`** is a dev-only preview page. It draws the whole map (1 px per tile, zoom 1–4×) with posts and their names, the spawn post, the flood-fill region, the carved route paths, spikes, and each enemy spawner's full reach in its kind's color. It shows the generation stats, has seed input with forward/back/random buttons, and a "play this seed" link (`/?seed=N`). It's a DOM page on purpose: it's a tool, not the game.
 - `test/worldgen.test.js`:
   - The golden hash matches for a fixed seed.
   - The same seed gives the same world.
-  - 200 seeds all pass reachability and have no pits, with well-formed, uniquely named posts and a spawn tile standing on floor.
+  - 200 seeds all pass reachability and have no pits (spikes included), with well-formed, uniquely named posts and a spawn tile standing on floor.
+  - 50 seeds: no spike or enemy reach inside a post's `noSpawn` rect, patrollers stand on rock along their whole walk, flyers and saws only move through open air, and the densities stay up.
   - `findTraps` flags a pit one row deeper than `stepUp`, but not one exactly `stepUp` deep or one with a one-way halfway up.
   - All three post kinds appear across seeds.
   - Generation time stays under budget.
   - The physics still beats `ENVELOPE`.
   - RNG and noise properties.
 - `npm run bench -- worldgen`: 50 worlds. Measured 2026-09-30 in Node 24 (genVersion 3, with pit fill): **mean 126 ms, p95 147 ms, max 202 ms**, no retries, no repair tunnels, about 152 platforms and 6,000 filled pit tiles per world. The two pit checks cost about 40 ms of that (genVersion 2 was mean 81 ms, p95 100 ms).
+- genVersion 4 (stage 5), measured 2026-10-01 on the same machine: **mean 149 ms, p50 142, p95 193, max 267**, no retries and no spike runs removed, about 228 spike tiles, 32 patrollers, 24 flyers and 11 saws per world. Stage 5 costs about 23 ms: the scans for spikes and spawners. The spike check rides on the pit fill's own final check, so it costs no extra `findTraps` in a world that has pits to fill (almost all of them).
 
 ## Status
 
@@ -137,7 +144,7 @@ Because this uses the real step function, it stays correct when the movement tun
 | M2 | rng, noise, pipeline stages 1–4 and 6, map hash, server seed + client regen/verify, preview tool | **done** 2026-09-30 |
 | M2.1 | 45° ramps: one-row-per-column surface, post flats relaxed into ramps, diagonal routes, rampify pass (genVersion 2) | **done** 2026-09-30 |
 | M2.2 | No pits: route platforms both ways, `findTraps` jump model, pit fill (genVersion 3) | **done** 2026-09-30 |
-| M5 | stage 5 (hazards, spawners) | not started |
+| M5 | stage 5: spikes with a pit re-check, saws, patrollers, flyers, danger by distance from posts; spawners in the hash (genVersion 4) | **done** 2026-10-01 |
 | M6+ | reachability v2 | not started |
 
 ## Open questions
@@ -145,7 +152,9 @@ Because this uses the real step function, it stays correct when the movement tun
 - **Only floors get ramps.** Ceilings, and the undersides of islands, keep their 1-tile stair-step look. That's fine for play, since you rarely touch a ceiling. Ceiling ramps would need their own tile type and physics.
 - **Ramps are all 45°.** Gentler 22.5° ramps (two tiles per row) would make rolling hills look softer. They'd need two more tile types and matching physics, and the one-row-per-column limit would become a choice between the two slopes.
 - **Sky posts** depend on route platforms, which the flood fill can't check (see the known gap above). Watch for them in the preview tool and in playtests.
-- **Pits are filled, not laddered.** Filling is simple and always works, but it removes cave space that routes open into. Ladders of one-ways into each pit would keep that space for exploring and spawners (M5), but they need another round of checks.
+- **Pits are filled, not laddered.** Filling is simple and always works, but it removes cave space that routes open into. Ladders of one-ways into each pit would keep that space for exploring and spawners, but they need another round of checks.
+- **Generation time:** stage 5 put the Node mean at about 150 ms and p95 near 200 ms, close to the 200 ms browser target. `smooth` and `findTraps` are the biggest costs left. Measure in a browser before tuning further.
+- **Saws on open ground:** saws only cross low passages, which are rare (about 12 per world). Horizontal tracks over open floors would add more, but need a rule for where you can pass them.
 - **Gravity-unreachable posts:** `findTraps` also returns `reached`, so the attempt loop could reject the ~3% of seeds with a post you can't jump up to. Should it?
 
 - **Map size:** is 1024 × 256 right? We'll tune it to how long a post-to-post run should take (target: about 30–90 s per route).

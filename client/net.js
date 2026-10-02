@@ -1,8 +1,9 @@
-// WebSocket client, clock sync, prediction/reconciliation and ghost buffers.
-// See ARCHITECTURE.md § Netcode. createPredictor and createGhosts touch no DOM or
-// network, so Node tests drive them directly.
+// WebSocket client, clock sync, prediction/reconciliation, enemy kills and ghost
+// buffers. See ARCHITECTURE.md § Netcode. createPredictor, createKillBook and
+// createGhosts touch no DOM or network, so Node tests drive them directly.
 import { MAX_INPUT_BATCH, MSG, PROTOCOL_VERSION, WS_PATH, decode, encode, unpackGhost } from '../shared/protocol.js';
-import { TICK_RATE, TUNING, sameState, stepInput } from '../shared/physics.js';
+import { TICK_RATE, TUNING, sameState } from '../shared/physics.js';
+import { stepPlayer } from '../shared/sim.js';
 
 const PING_INTERVAL_MS = 1000;
 const RECONNECT_MS = 2000;
@@ -38,17 +39,26 @@ export function createNet({ name }) {
     onPrices: [],
     /** Called with each trade result. */
     onTradeResult: [],
+    /** Called when the server says we died ({tick, cause, lost, wallet}). */
+    onDied: [],
+    /** Called when anyone stomps an enemy ({id, tick}). */
+    onKilled: [],
     /** Our money and cargo, as the server last reported them. Never changed locally. */
     wallet: null,
     /** Latest leaderboard rows [[id, name, netWorth]], best first. */
     board: [],
     /** Estimated server time, in fractional ticks, at performance.now() = `now`. */
     serverTick: (now = performance.now()) => now / TICK_MS + offset,
-    /** Send input for ticks seq, seq+1, …. */
-    sendInput(seq, bits) {
+    /**
+     * Ticks between server time and the tick an input sent now is applied at:
+     * half the round trip plus a small buffer. Prediction runs this far ahead.
+     */
+    lead: () => net.rtt / 2 / TICK_MS + 2,
+    /** Send input for ticks seq, seq+1, …, predicted at enemy ticks tick, tick+1, …. */
+    sendInput(seq, tick, bits) {
       if (ws?.readyState !== WebSocket.OPEN || net.status !== 'connected') return;
       for (let i = 0; i < bits.length; i += MAX_INPUT_BATCH) {
-        ws.send(encode(MSG.INPUT, { seq: seq + i, tick: Math.round(net.serverTick() + lead()), bits: bits.slice(i, i + MAX_INPUT_BATCH) }));
+        ws.send(encode(MSG.INPUT, { seq: seq + i, tick: tick + i, bits: bits.slice(i, i + MAX_INPUT_BATCH) }));
       }
     },
     /**
@@ -69,8 +79,6 @@ export function createNet({ name }) {
   /** server tick − performance.now() in ticks. */
   let offset = 0;
   let synced = false;
-  /** How far ahead of the server our inputs are stamped: half the RTT plus a small buffer. */
-  const lead = () => net.rtt / 2 / TICK_MS + 2;
 
   function clockSample(serverTick, now, rttMs) {
     const sample = serverTick + rttMs / 2 / TICK_MS - now / TICK_MS;
@@ -125,6 +133,13 @@ export function createNet({ name }) {
         case MSG.LEADERBOARD:
           net.board = msg.rows;
           break;
+        case MSG.DIED:
+          net.wallet = msg.wallet;
+          for (const fn of net.onDied) fn(msg);
+          break;
+        case MSG.KILLED:
+          for (const fn of net.onKilled) fn(msg);
+          break;
         case MSG.JOINED:
           net.names.set(msg.id, msg.name);
           break;
@@ -154,23 +169,78 @@ export function createNet({ name }) {
 }
 
 /**
- * Client-side prediction of the local player (ARCHITECTURE.md § Own player).
- * Every tick is applied locally at once and kept, with its input, until the server
- * acknowledges it. A snapshot's state is compared with what we predicted for the
- * same input tick. Equal (the normal case) means nothing to do. Different means a
- * misprediction: take the server's state, replay the unacknowledged inputs on top,
- * and hand the visual jump to `err` to ease out.
- * @param {import('../shared/tiles.js').TileMap} map
- * @param {import('../shared/physics.js').PlayerState} spawn
+ * Enemy kills as this client sees them (spawner id → kill tick, as in
+ * shared/enemies.js enemyPhase). `confirmed` is what the server said (welcome and
+ * `killed` messages). `view` adds our own predicted stomps, so prediction doesn't
+ * collide with an enemy we just killed while the server's word is on its way; it's
+ * what prediction and drawing use. A predicted stomp the server hasn't confirmed by
+ * the time it acknowledges that input tick is taken back.
  */
-export function createPredictor(map, spawn, tuning = TUNING) {
+export function createKillBook() {
+  const book = {
+    confirmed: /** @type {Record<number, number>} */ ({}),
+    view: /** @type {Record<number, number>} */ ({}),
+    /** @type {{id: number, tick: number, seq: number}[]} */
+    predicted: [],
+    /** Called with (id, tick) when an enemy dies in `view` (for effects). */
+    onKill: [],
+    reset(kills = {}) {
+      book.confirmed = { ...kills };
+      book.view = { ...kills };
+      book.predicted = [];
+    },
+    /** The server says `id` died at `tick`. */
+    confirm(id, tick) {
+      book.confirmed[id] = tick;
+      book.predicted = book.predicted.filter((k) => k.id !== id);
+      if (book.view[id] === tick) return;
+      book.view[id] = tick;
+      for (const fn of book.onKill) fn(id, tick);
+    },
+    /** We stomped `id` at `tick` in input tick `seq` (idempotent, so replays can repeat it). */
+    predict(id, tick, seq) {
+      if (book.view[id] === tick) return;
+      book.view[id] = tick;
+      book.predicted.push({ id, tick, seq });
+      for (const fn of book.onKill) fn(id, tick);
+    },
+    /** The server has applied our input up to `ack`: drop predicted stomps it didn't confirm. */
+    settle(ack) {
+      if (!book.predicted.length) return;
+      book.predicted = book.predicted.filter((k) => {
+        if (k.seq > ack) return true;
+        if (book.confirmed[k.id] !== undefined) book.view[k.id] = book.confirmed[k.id];
+        else delete book.view[k.id];
+        return false;
+      });
+    },
+  };
+  return book;
+}
+
+/**
+ * Client-side prediction of the local player (ARCHITECTURE.md § Own player).
+ * Every tick is applied locally at once and kept, with its input and enemy tick,
+ * until the server acknowledges it. A snapshot's state is compared with what we
+ * predicted for the same input tick. Equal (the normal case) means nothing to do.
+ * Different means a misprediction: take the server's state, replay the
+ * unacknowledged inputs on top, and hand the visual jump to `err` to ease out.
+ * @param {ReturnType<import('../shared/sim.js').createSim>} sim
+ * @param {ReturnType<import('../shared/sim.js').spawnPlayer>} spawn
+ * @param {ReturnType<typeof createKillBook>} [kills]
+ */
+export function createPredictor(sim, spawn, tuning = TUNING, kills = createKillBook()) {
   const pred = {
     /** Last two predicted states, for render interpolation. */
     prev: spawn,
     cur: spawn,
     /** Input tick of `cur`. */
     seq: 0,
-    /** @type {{seq: number, bits: number, state: import('../shared/physics.js').PlayerState}[]} */
+    /** Enemy tick of `cur` and of `prev`. */
+    tick: 0,
+    prevTick: 0,
+    kills,
+    /** @type {{seq: number, bits: number, tick: number, state: ReturnType<typeof stepPlayer>}[]} */
     pending: [],
     lastAck: 0,
     /** Snapshots that disagreed with the prediction (the determinism health metric). */
@@ -183,19 +253,33 @@ export function createPredictor(map, spawn, tuning = TUNING) {
     decay,
   };
 
-  function reset(state, ack) {
+  function reset(state, ack, tick = 0) {
     pred.prev = pred.cur = state;
     pred.seq = pred.lastAck = ack;
+    pred.tick = pred.prevTick = tick;
     pred.pending = [];
     pred.err = { x: 0, y: 0 };
   }
 
-  /** Predict one tick. Returns its input tick (seq) for sending. */
-  function advance(bits) {
+  /** One tick, with our stomps recorded as predicted kills. */
+  function sim1(state, bits, tick, seq) {
+    const out = [];
+    const next = stepPlayer(state, bits, tick, sim, kills.view, out, tuning);
+    for (const e of out) if (e.type === 'stomp') kills.predict(e.id, e.tick, seq);
+    return next;
+  }
+
+  /**
+   * Predict one tick at enemy tick `tick` (by default the one after the last).
+   * Returns its input tick (seq) for sending.
+   */
+  function advance(bits, tick = pred.tick + 1) {
     pred.prev = pred.cur;
-    pred.cur = stepInput(pred.cur, bits, map, spawn, tuning);
+    pred.prevTick = pred.tick;
     pred.seq++;
-    pred.pending.push({ seq: pred.seq, bits, state: pred.cur });
+    pred.tick = tick;
+    pred.cur = sim1(pred.cur, bits, tick, pred.seq);
+    pred.pending.push({ seq: pred.seq, bits, tick, state: pred.cur });
     // Nothing acknowledges input while disconnected or with edited tuning.
     if (pred.pending.length > MAX_PENDING) pred.pending.shift();
     return pred.seq;
@@ -205,6 +289,7 @@ export function createPredictor(map, spawn, tuning = TUNING) {
   function reconcile(ack, state) {
     if (ack <= pred.lastAck) return false;
     pred.lastAck = ack;
+    kills.settle(ack);
     const i = pred.pending.findIndex((e) => e.seq >= ack);
     if (i >= 0 && pred.pending[i].seq === ack && sameState(pred.pending[i].state, state)) {
       pred.pending.splice(0, i + 1);
@@ -224,7 +309,7 @@ export function createPredictor(map, spawn, tuning = TUNING) {
       let before = state;
       for (const e of pred.pending) {
         before = s;
-        s = e.state = stepInput(s, e.bits, map, spawn, tuning);
+        s = e.state = sim1(s, e.bits, e.tick, e.seq);
       }
       pred.cur = s;
       // Keep the interpolation span the same length. err covers the jump.

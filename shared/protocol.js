@@ -4,7 +4,7 @@
 // messages doesn't touch game code.
 import { ANIMS, animFor } from './physics.js';
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Server ticks between snapshots (60 Hz / 3 = 20 Hz). */
 export const SNAPSHOT_EVERY = 3;
@@ -23,18 +23,21 @@ export const MSG = Object.freeze({
   // client → server
   HELLO: 'hello', // {name, protocol}
   PING: 'ping', // {c: clientTimeMs}
-  INPUT: 'input', // {seq, tick, bits: number[]}: input for ticks seq, seq+1, …; tick = client's estimate of server tick
+  INPUT: 'input', // {seq, tick, bits: number[]}: input for ticks seq, seq+1, …, with enemy ticks tick, tick+1, …
   TRADE: 'trade', // {reqId, postId, goodId, qty, side: 'buy'|'sell'}
   // server → client
   WELCOME: 'welcome', // {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash},
-  //                      you: PlayerState, ack, players: [[id, name]], wallet: {money, cargo, paid, hold}}
+  //                      you: player state (shared/sim.js), ack, players: [[id, name]], wallet: {money, cargo, paid, hold},
+  //                      kills: {spawnerId: killTick}}
   PONG: 'pong', // {c: echoed clientTimeMs, s: serverTick (fractional)}
-  SNAPSHOT: 'snap', // {tick, ack, you: PlayerState, g: Ghost[]} (see packGhost)
+  SNAPSHOT: 'snap', // {tick, ack, you: player state, g: Ghost[]} (see packGhost)
   JOINED: 'joined', // {id, name}
   LEFT: 'left', // {id}
   PRICES: 'prices', // {postId, tick: market tick, goods: [[goodId, sell, buy]]}: only to players in that post's zone
   TRADE_RESULT: 'tradeResult', // {reqId, ok, reason?, price?, wallet: {money, cargo, paid, hold}}
   LEADERBOARD: 'board', // {rows: [[id, name, netWorth]]}, best first
+  DIED: 'died', // {tick, cause, lost: {goodId: units}, wallet}: to the player who died
+  KILLED: 'killed', // {id: spawnerId, tick}: an enemy was stomped, to everyone
   ERROR: 'error', // {reason}
 });
 

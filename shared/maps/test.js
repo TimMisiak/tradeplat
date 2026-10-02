@@ -4,7 +4,7 @@
 //   spawn + trade-post shell · stairs (2,2,2,3,4-tile steps) · pit with 3/5/7-tile gaps
 //   (one-way ladder out) · wall-jump shaft (4 wide, enter bottom-left) · one-way tower
 //   · low-ceiling corridor with 1-tile bumps · a ramp hill on the runway (run over it, no jump).
-// Spikes (^) are drawn but harmless until M5.
+// Spikes (^) on the pit floor kill (M5). A few enemies (TEST_SPAWNERS) to try against.
 import { parseAsciiMap } from '../tiles.js';
 
 export const TEST_MAP_ROWS = Object.freeze([
@@ -44,6 +44,17 @@ export const TEST_MAP_ROWS = Object.freeze([
   '##################################################################################################################################',
 ]);
 
+/**
+ * Enemies on the test level, in the worldgen spawner format (shared/enemies.js):
+ * a patroller on the runway after the tower, a saw crossing the runway, and a
+ * flyer looping over the pit.
+ */
+export const TEST_SPAWNERS = Object.freeze([
+  { id: 0, kind: 'patroller', x: 90, y: 30, params: { x0: 84 * 16 + 6, x1: 97 * 16 - 6, floor: 31 * 16, speed: 0.75, phase: 0 } },
+  { id: 1, kind: 'saw', x: 102, y: 30, params: { x0: 102 * 16 + 8, y0: 26 * 16 + 12, x1: 102 * 16 + 8, y1: 31 * 16 - 12, period: 120, phase: 0 } },
+  { id: 2, kind: 'flyer', x: 50, y: 12, params: { rx: 48, ry: 16, period: 240, phase: 0, path: 'eight' } },
+]);
+
 export function createTestMap() {
-  return parseAsciiMap(TEST_MAP_ROWS);
+  return { ...parseAsciiMap(TEST_MAP_ROWS), spawners: TEST_SPAWNERS };
 }

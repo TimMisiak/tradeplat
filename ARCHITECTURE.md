@@ -36,13 +36,14 @@ shared/
   rng.js                # sfc32 seeded PRNG + helpers
   tiles.js              # tile ids, flags (solid, oneWay, hazard), map accessors
   physics.js            # TUNING table + pure step()
+  sim.js                # stepPlayer(): step() plus spikes, enemies, death, respawn (every host runs this)
   worldgen.js           # seed → map + POIs + spawners
-  enemies.js            # enemy kinds, deterministic position(spawner, tick)
+  enemies.js            # enemy kinds, deterministic enemyAt(spawner, tick), kill phases, spatial index
   goods.js              # goods catalog
   trade.js              # wallet, hold, post zones, trade validation (server authoritative, client for hints)
   protocol.js           # message type constants, encode/decode helpers
   mathdet.js            # deterministic sin/cos (see Determinism)
-  maps/test.js          # hand-written M1 test level (ASCII)
+  maps/test.js          # hand-written M1 test level (ASCII) + a few test enemies
   noise.js              # integer-hash value noise + fbm
 client/
   index.html            # <canvas>, import map, one <script type="module">
@@ -51,6 +52,8 @@ client/
   net.js                # ws client, clock sync, reconciliation, ghost buffers
   camera.js             # follow, look-ahead, pixel snapping, bounds
   player-view.js        # physics state → animation + sprite (or flat fallback) instances
+  enemy-view.js         # enemies at the render tick → sprite (or flat fallback) instances
+  fx.js                 # death splat, stains, stomp puffs, screen shake, respawn fade
   dev/tuning.js         # dev-only DOM tuning panel (` key), see DESIGN.md § Movement feel
   assets.js             # asset spec + manifest validator (+ runtime loader later), see ART.md
   assets/               # exported art: manifest.json, tiles/, sprites/, icons/ (ART.md)
@@ -80,7 +83,13 @@ The static server maps `/` → `client/` and `/shared/` → `shared/`. Client mo
   - Horizontal speed is the same on ramps as on flat ground.
   - Because the box rests on its highest corner, its centre floats up to 6 px above the ramp. `feetY()` gives the renderer the surface height under the centre, so the sprite's feet are drawn on the ramp.
   - On a map with no ramps, the behaviour is exactly the same as before, and the physics golden hash didn't change.
-- **Hazards and enemies** are checked after the move: spike tiles via tile flags, and enemies via AABB overlap with `enemies.position(spawner, tick)`.
+- **`stepPlayer(p, input, tick, sim, kills, out)`** in `shared/sim.js` is one tick as every host runs it, wrapped around `step()`. It is pure in the same way: it returns a new state and pushes events (`died`, `stomp`) onto the caller's `out` array.
+  - The state is `step()`'s plus `dead` (ticks left before respawning, 0 while alive) and `home` (the last post zone stood in, -1 for none).
+  - While dead, input is ignored and `dead` counts down. On the last tick the player respawns fresh at `home`'s spawn tile.
+  - The `RESPAWN` input bit (R) is a death with cause `gave up`.
+  - After the move, `home` is updated, then **enemies** are checked, then **spikes**. Each uses a hurtbox inset 2 px at the sides and 3 px at the top.
+  - Enemies: the spawners whose extent could reach the player come from a spatial index (16×16-tile cells, built from the world's spawners). Each enemy alive at `tick` (per `kills`) is placed with `enemyAt(spawner, tick)`. A patroller landed on from above is a stomp. Any other contact is a death.
+  - Spikes: a `HAZARD` tile hurts only in the 10 px next to the solid tile it sits on, the same neighbour the renderer turns it towards.
 - **Why pure:** a pure step function can be replayed, so reconciliation is simple and rollback for PvP stays possible later.
 
 ### Determinism
@@ -88,7 +97,7 @@ The static server maps `/` → `client/` and `/shared/` → `shared/`. Client mo
 Client prediction and client-side world generation both depend on client and server computing **bit-identical** results.
 
 - The basic IEEE-754 double operations (`+ − × ÷`, `Math.sqrt`) are exact and give the same results on every JS engine. The **transcendental functions (`Math.sin`, `Math.exp`, `Math.pow`, …) are not guaranteed** to match across V8, SpiderMonkey and JavaScriptCore.
-- So shared simulation code uses only the basic operations, plus `shared/mathdet.js`: deterministic `sin`/`cos` built from a fixed polynomial and a table. Enemy paths use these.
+- So shared simulation code uses only the basic operations, plus `shared/mathdet.js`: `sinTurns`/`cosTurns` take turns (1 = 2π), reduce them to a quarter turn exactly with `Math.floor` and symmetry, then evaluate a Taylor polynomial to x¹⁵ (error under 1e-11). Flyer and saw paths use these.
 - `Math.random` is banned in `shared/`. Randomness comes from `shared/rng.js` (sfc32 with an explicit seed).
 - Server-only code, such as the market's random walk, may use any `Math` function, because its results are sent to clients rather than recomputed by them.
 - A test runs a recorded input sequence through `step()` and compares it with a golden hash. A browser-side debug page runs the same check, so we can compare engines by hand.
@@ -97,26 +106,27 @@ Client prediction and client-side world generation both depend on client and ser
 
 ### Connection
 1. The client opens `ws(s)://host/ws` and sends `hello {name}`. The scheme and host always come from `location` (`wss:` on an `https:` page), because the game is served over HTTPS behind a TLS-terminating proxy, and WebGPU needs a secure context anyway. The server itself speaks plain HTTP/WS and never builds absolute URLs.
-2. The server replies `welcome {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash}, you, ack, players, wallet}`. `you` is the new player's starting state and `ack` its input seq (0). `players` is `[[id, name]]` for everyone else, kept current by `joined {id, name}` and `left {id}`. `wallet` is `{money, cargo, paid, hold}` (`paid` is the average unit price paid per good carried). There's no market snapshot: prices arrive only while standing in a post ([Deaths, trades and events](#deaths-trades-and-events)). A leaderboard follows the welcome right away.
+2. The server replies `welcome {playerId, name, protocol, serverTick, tickRate, tuningHash, world: {seed, genVersion, hash}, you, ack, players, wallet, kills}`. `you` is the new player's starting state (a `stepPlayer` state) and `ack` its input seq (0). `kills` is the server's enemy kills (spawner id → kill tick, recent ones only). `players` is `[[id, name]]` for everyone else, kept current by `joined {id, name}` and `left {id}`. `wallet` is `{money, cargo, paid, hold}` (`paid` is the average unit price paid per good carried). There's no market snapshot: prices arrive only while standing in a post ([Deaths, trades and events](#deaths-trades-and-events)). A leaderboard follows the welcome right away.
 3. The client **regenerates the map from the seed** ([WORLDGEN.md](WORLDGEN.md#determinism)) and checks that its own map hash and tuning hash match the server's. If either doesn't match, it shows an error and refuses to play, because prediction would be wrong.
 4. Every welcome is a new server-side player, including after a reconnect. The client restarts prediction from `you` and `ack`.
 5. Dev worlds (`?seed=N`, `?map=test`) aren't the server's world. They stay connected but send no input and draw no ghosts. Online, the client always simulates with the server's `TUNING` and always reconciles. Tuning-panel edits ([DESIGN.md § Movement feel](DESIGN.md#movement-feel)) apply only in the offline dev worlds. (An earlier M3 version kept panel edits online and switched corrections off. Because edits persist in `localStorage`, one stale tweak left players silently out of sync with their own ghosts.)
 
 ### Clock sync
-The client pings the server once a second. `pong` carries the server's fractional tick. The client adds half the round trip to it and keeps a smoothed offset between `performance.now()` and server ticks (it resets on a jump of more than 30 ticks, such as a server restart). Ghost rendering uses this clock. Inputs are stamped with it, plus RTT/2 and a 2-tick buffer, as the `tick` that M5 enemy checks will use.
+The client pings the server once a second. `pong` carries the server's fractional tick. The client adds half the round trip to it and keeps a smoothed offset between `performance.now()` and server ticks (it resets on a jump of more than 30 ticks, such as a server restart). Ghost rendering uses this clock. Prediction's **enemy tick** runs ahead of it by RTT/2 plus a 2-tick buffer (`net.lead()`), which is about the server tick at which our input will arrive ([Enemies](#enemies)).
 
 ### Own player: prediction and reconciliation
-- Every tick the client samples its input into a bitmask (`left, right, up, down, jump, interact`, plus the dev `respawn` bit for R). It applies that input locally and numbers it with a per-connection `seq` (1, 2, 3, …). **Once per rendered frame** it sends `input {seq, tick, bits: [...]}` with that frame's ticks, usually one and at most 15 after a hitch (up to 8 per message).
-- `stepInput()` in `shared/physics.js` is one tick as every host runs it: the respawn bit resets to the spawn state, then `step()`. The client's prediction, the client's replay and the server all call it.
+- Every tick the client samples its input into a bitmask (`left, right, up, down, jump, interact`, plus the `respawn` bit for R, which gives up). It applies that input locally at an enemy tick and numbers it with a per-connection `seq` (1, 2, 3, …). **Once per rendered frame** it sends `input {seq, tick, bits: [...]}` with that frame's ticks, usually one and at most 15 after a hitch (up to 8 per message). `tick` is the enemy tick of the first one, and the rest follow on: tick+1, tick+2, ….
+- The enemy tick goes up by one per predicted tick. At the start of a frame, if it is more than 4 ticks from server time + lead, it jumps to that, so ticks within one frame (and one message) are always consecutive.
+- `stepPlayer()` in `shared/sim.js` is one tick as every host runs it ([Simulation](#simulation)). The client's prediction, the client's replay and the server all call it, with the same input and the same enemy tick.
 - **Because ghosts don't interact, the server steps each player independently, as that player's inputs arrive.** It doesn't wait on a single global lockstep. This avoids mispredictions caused by network jitter.
   - **Speed-hack guard (credit):**
     - Each server tick gives a player one tick of credit, and applying an input tick spends one. So nobody moves faster than real time.
     - Input that arrives with no credit waits in a queue of up to 30 ticks. Beyond that, it is dropped. A duplicate seq is ignored, and a gap repeats the last input. Honest clients over TCP produce neither.
     - A player whose credit passes 30 ticks (500 ms of no input) gets a **no-input filler step** each tick. Filler steps don't use up a seq, so the client's late inputs still apply in order, and it replays them on top of the server state it gets back.
     - When input resumes after filler steps, the client's catch-up burst runs on the leftover credit, and the next tick resets the credit to 2. Otherwise a client that lost time (background tab, long hitch) would stay pinned at the limit, where any jitter forces more filler steps, or its burst would sit in the queue and add lag for good.
-  - Enemy collisions for an input are evaluated at the tick number that input carries, within an allowed window of ±15 ticks (±250 ms) of server time. This is effectively lag compensation, and it is safe because the enemies are deterministic. (M5)
+  - Enemy collisions for an input are evaluated at the tick number that input carries, clamped to ±15 ticks (±250 ms, `LAG_WINDOW`) of server time when it is applied. This is effectively lag compensation: you're hit by the enemy where your screen showed it. It is safe because the enemies are deterministic. A gap the server filled in, and a filler step, use the server's tick.
 - Every 3 ticks (20 Hz), each client gets `snap {tick, ack, you, g}`. `you` is its authoritative state after input `ack`.
-  - The client keeps each unacknowledged tick's input and predicted state. If the prediction for `ack` equals `you` field for field, which is the normal case, it just drops the acknowledged entries.
+  - The client keeps each unacknowledged tick's input, enemy tick and predicted state. If the prediction for `ack` equals `you` field for field, which is the normal case, it just drops the acknowledged entries.
   - Otherwise it takes `you`, **replays the inputs the server hasn't acknowledged yet**, and eases the visual jump out of the render position over a few frames. A jump over 64 px (a respawn) snaps instead.
 - With identical code on both sides, mismatches should almost never happen. The client counts them as a **determinism health metric** in the dev panel (with seq, ack and pending count), and logs each one to the console. The expected one comes after a stall of more than 500 ms, when the server filled in no-input steps.
 
@@ -127,18 +137,22 @@ The client pings the server once a second. `pong` carries the server's fractiona
 - Ghosts are drawn before the local player, with the player sprite tinted translucent blue, and a name tag (from `players`/`joined`) in the UI pass.
 
 ### Enemies
-- Enemy positions are never sent. The client computes `enemies.position(spawner, tick)` itself.
-- Only events go over the wire: `enemyKilled {spawnerId, tick}` and `enemySpawned {spawnerId, tick}`, plus the alive/dead set in `welcome`.
+- Enemy positions are never sent. Worldgen places the spawners ([WORLDGEN.md § Pipeline](WORLDGEN.md#pipeline) stage 5), and the client computes `enemyAt(spawner, tick)` in `shared/enemies.js` itself, both to predict collisions and to draw them.
+- **Kills are the only enemy state.** `kills` maps spawner id → the tick it was stomped. `enemyPhase(kills, id, tick)` derives the rest: alive up to and including the kill tick (so replaying the stomp tick stomps again), dead for 20 s, blinking and harmless for 1 s, then alive wherever its path has it. A respawn is therefore implied, never sent.
+- On the wire: `killed {id, tick}` when the server applies a stomp, sent to **everyone**, plus the current `kills` in `welcome`. Kills are rare and a few bytes each, and a client that walks up to that enemy later needs to know it's dead to predict it. The server forgets kills once they can't affect any input (respawn + grace + a margin).
+- If two inputs stomp the same enemy, the earlier enemy tick wins: an input applied later but stamped earlier moves the kill tick back.
+- The client keeps a **kill book** (`createKillBook` in `client/net.js`). `confirmed` is the server's kills. `view` adds our own predicted stomps, so we don't collide with an enemy we just killed while the server's word is on its way. Prediction and drawing use `view`. A predicted stomp the server hasn't confirmed by the time it acknowledges that input tick is dropped (the `killed` message is always sent before the snapshot that acknowledges the stomp).
+- Someone else's kill reaches us up to an RTT after its tick, so in that window we can predict a hit on an enemy that is already dead. The snapshot corrects it. It should be rare: it needs two players at the same enemy within a fraction of a second.
 
 ### Deaths, trades and events
-- **Deaths:** the client predicts the death at once (splat, restart fade) and sends nothing extra. The server detects the same death while replaying inputs, clears the player's cargo, and sends `died {tick, cause}`. If the server disagrees, which should be rare, the client follows the server.
+- **Deaths:** the client predicts the death at once (splat, restart fade) and sends nothing extra. The server detects the same death while replaying inputs, clears the player's cargo (`dropCargo` in `shared/trade.js`), and sends `died {tick, cause, lost, wallet}` to that player. `lost` is the cargo that went (good id → units), for the death message. Causes are `spikes`, `patroller`, `flyer`, `saw` and `gave up`. If the server disagrees, which should be rare, the client follows the server's snapshot. Other players see the death as the ghost's `death` animation, and draw their own splat for it. Trades are refused while dead.
 - **Trades:** `trade {reqId, postId, goodId, qty, side}` → `tradeResult {reqId, ok, reason?, price?, wallet: {money, cargo, paid, hold}}`. The server checks that the player is inside the post zone (using the server's position), has enough money or cargo, has hold space, and that the post actually trades that good ([ECONOMY.md § Trade validation](ECONOMY.md#trade-validation)). It handles a trade as soon as it arrives, against the player's latest simulated state. Money and cargo only change on the server; the client shows the wallet from the last `welcome` or `tradeResult` and keeps one order in flight at a time.
 - **Market:** the server ticks the market every 600 ticks (10 s). It sends `prices {postId, tick, goods: [[goodId, sell, buy]]}` only to players who are in that post's zone: once when the server sees them walk in (checked every tick), and again after each market tick while they stay. This supports the design rule that you only see prices where you are standing ([DESIGN.md](DESIGN.md#information-is-part-of-the-game)). The client keeps every prices message as its memory of that post, stamped with when it arrived, and calls them live if they arrived since it walked into the zone.
 - **Leaderboard:** `board {rows: [[id, name, netWorth]]}`, best first, every player on the server, broadcast every 120 ticks (2 s) and once after each welcome. At the 64-player target that is about 2 KB per 2 s per client; send only the top rows plus each player's own if it grows.
 
 ### Interest management
 - The world is divided into **32×32-tile chunks**. Each client's interest set is the 3×3 chunks around the chunk its player's centre is in. That covers the 40×22.5-tile view with at least a chunk of margin.
-- Ghosts and enemy events outside that set aren't sent. The leaderboard is sent to everyone at a low rate (every 2 s).
+- Ghosts outside that set aren't sent. The leaderboard (every 2 s) and enemy kills ([Enemies](#enemies)) go to everyone.
 
 ### Protocol
 - JSON text frames: `{t: "<type>", ...}`. Type constants are defined in `shared/protocol.js`.
@@ -151,7 +165,7 @@ The client pings the server once a second. `pong` carries the server's fractiona
   | 64 | spread | 0.24 ms, ~0.5% | 350 B, 7 KiB/s | 2 KiB/s |
   | 128 | crowd | 4.2 ms, ~8% | 3.0 KB, 59 KiB/s | 28 KiB/s |
 
-  Physics costs about 0.4 µs per step (0.15% of a core for 64 players). **Verdict: stay on JSON.** At the 64-player target, the worst case is ~2 MB/s of total egress and 2% of a core. Binary would roughly halve the bytes. Revisit if crowds at posts turn out to be common, or the player target grows.
+  Physics costs about 0.4 µs per step (0.15% of a core for 64 players). M5's full `stepPlayer` (physics plus spikes and enemies), measured next to the busiest cluster of spawners, is about 1.2 µs, still under 0.5% of a core for 64 players. **Verdict: stay on JSON.** At the 64-player target, the worst case is ~2 MB/s of total egress and 2% of a core. Binary would roughly halve the bytes. Revisit if crowds at posts turn out to be common, or the player target grows.
 
 ### Scale target
 The v1 target is **one Node process per world, about 64 concurrent players**. Physics per player per tick is a handful of tile lookups, so the bottleneck will be snapshot serialization, and the benchmark will measure it. Scaling past that (sharding the map, multiple worlds) is out of scope until we have measurements.
@@ -176,7 +190,8 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - **Sprite pass:**
   - Players, ghosts, enemies, particles and UI text are all **instanced quads**.
   - Each frame the client fills a CPU-side `Float32Array` of instances `{x, y, w, h, color, uvRect, flags}` and uploads it with `writeBuffer`, then issues one draw per material (a flat-color pipeline and a textured/atlas pipeline).
-  - Draw order: tiles, then post signs, then enemies, then ghosts (alpha), then the local player, then particles, then UI.
+  - Draw order: tiles, then post signs, then death stains, then enemies, then ghosts (alpha), then the local player, then particles, then UI.
+  - Enemies are drawn at the **predicted** enemy tick, interpolated between the last two, so you see them where your movement collides with them. Ghosts are drawn about 100 ms in the past, so a ghost can look a little out of step with the enemies around it.
   - **UI pass:** the same sprite pipeline with its own view uniform (camera at 0,0, so positions are virtual screen px) and its own texture, the UI atlas from `ui/text.js`. Both batches share one instance buffer; the UI draws with `firstInstance` after the world sprites. World-anchored labels (ghost name tags, post names) are converted to screen px on the CPU.
 - **Rendering order:** the `requestAnimationFrame` callback runs any pending fixed simulation steps, interpolates positions for drawing, then encodes and submits one command buffer.
 
@@ -194,7 +209,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - For now, the server **generates a new seed on every start**, and everything lives in memory.
 - To keep persistence possible later:
   - All world, market and player state is plain JSON-able data with a `version` field. There are no class instances with hidden state and no closures holding game state.
-  - The server keeps the seed and the market's PRNG state, so a saved world can be restored exactly.
+  - The server keeps the seed, the market's PRNG state and the enemy kills (`{version, kills}`), so a saved world can be restored exactly.
   - Player identity is a server-issued `playerId`, kept separate from the display name, so accounts can be attached to it later.
 - Planned path: periodic JSON snapshots to disk (M6+), then a real database once accounts exist.
 
@@ -206,7 +221,8 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - `test/trade.test.js`: trade validation (out of zone, no money, full hold).
 - `test/trade-ui.test.js`: trade menu keys, order sizing (×5 clamped, max), refusals explained without a request, price memory ordering.
 - `test/netcode.test.js`: the server's credit and queue (speed-hack guard, gaps, duplicates, filler steps and recovery). Also: server state equals a plain replay, prediction against the server gives zero mismatches, a misprediction replays correctly, ghost interpolation, and interest chunks.
-- `test/server.test.js`: over real sockets, welcome fields, acknowledged input matches a local replay, and two players see each other as ghosts with join and leave events.
+- `test/server.test.js`: over real sockets, welcome fields, acknowledged input matches a local replay, two players see each other as ghosts with join and leave events, and giving up sends `died` with the lost cargo.
+- `test/hazards.test.js`: mathdet against `Math.sin`, enemy motion and extents, hit shapes, kill phases, the spatial index, spikes (teeth only, jumpable runs), death and respawn at home, stomps and bounce, the patroller sword, the kill book, prediction matching the server through a stomp and a death, cargo loss on the server, and the lag-window clamp.
 - `bench/snapshot.bench.js`: bytes and CPU per snapshot at N players, JSON vs. a packed-binary estimate. Run with `npm run bench -- snapshot`.
 
 ## Status
@@ -218,6 +234,7 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 | M2 | tile art in the tile pass: a 16×16 texture array, cardinal4 masks (a neighbour joins if it's the same tile or both are solid), and spikes rotated onto their solid neighbour. Also the camera on the full-size generated map, and loading the world from the server's seed | **done** 2026-09-30 |
 | M3 | netcode: clock sync, prediction/reconciliation (credit-based speed guard, no-input filler), ghosts with 100 ms interpolation, 3×3-chunk interest sets, join/leave, snapshot bench (verdict: JSON). Checked in headless Chromium with two tabs: no mismatches in normal play, and one correction after a forced 1.2 s stall. Ghost name tags wait for the M4 text atlas | **done** 2026-09-30 |
 | M4 | trade, prices and leaderboard messages (protocol 3), text + icon atlas and UI pass, trade menu, HUD, leaderboard, ghost name tags, post signs. Checked in headless Chromium (frames read back from an offscreen texture): HUD, signs, ghost name tags, the menu, ×5 and max buys, icon art, the offline dev world | **done** 2026-09-30 |
+| M5 | `shared/sim.js` (`stepPlayer`: spikes, enemies, stomps, death, respawn at home), `shared/enemies.js` (motion, kill phases, spatial index), `shared/mathdet.js`. Netcode: per-input enemy ticks with the ±15-tick lag window, `killed` and `died` messages, kills in `welcome` (protocol 4), the client kill book. Enemy and death rendering with flat fallbacks (patroller art), splat, stains, shake, fade, death message. Checked in headless Chromium (offscreen readback) | **done** 2026-10-01 |
 | M6+ | persistence snapshots, binary protocol (if the bench says so), PvP netcode | not started |
 
 ## Open questions
@@ -225,6 +242,6 @@ Keeping `step()` pure and the state as plain data is what keeps this migration p
 - **Firefox/Safari WebGPU gaps:** M0 asks for no optional features or raised limits, so it should run anywhere WebGPU does. It has **not been tried on real browsers yet**. In the dev sandbox, headless Chromium with SwiftShader loses the device when presenting to a canvas, even for a trivial clear. The M0 pipeline was verified by rendering offscreen and reading the pixels back. Check Chrome, Firefox and Safari by hand before M1 adds anything that depends on them.
 - **Batching inputs:** M3 sends one message per rendered frame, carrying that frame's ticks (so usually one tick per message at 60 fps, which is ~60 small frames/s per client up). Worth batching 2–3 ticks only if a latency feel test says the added delay is unnoticeable and server message overhead shows up in a profile.
 - **Client clock drift:** a client whose clock runs fast fills its server queue over a long session (30 ticks at 100 ppm takes ~80 min). That adds latency to its acks and to how others see it, then drops input. If it shows up, send the queue length in snapshots and have the client slow its tick slightly (time dilation).
-- **Latency testing:** everything so far ran on localhost. Try a real network, or an artificial delay and jitter, before M5 relies on the input `tick`.
+- **Latency testing:** everything so far ran on localhost. M5's enemy checks now rely on the input `tick` being close to when the input arrives. Try a real network, or an artificial delay and jitter, and watch the mismatch count near enemies.
 - **Hosting:** one small VPS/container per world is enough for v1. The `Dockerfile` (node:24-alpine, production deps only, non-root, with a healthcheck) and `docker-compose.yml` run one world. Still to decide at first deploy: TLS for `wss`, which should terminate at a reverse proxy in front of the container.
 - **Mobile touch controls:** out of scope for now. Precise platforming on touch screens is a design problem, not only a technical one.

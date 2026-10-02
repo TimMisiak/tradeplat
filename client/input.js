@@ -19,11 +19,14 @@ export function createInput(target = window) {
   let latched = 0;
   // Key presses (KeyboardEvent.code, with auto-repeat) since the last presses() call, for menus.
   const pressed = [];
+  // Keys pressed (not auto-repeat) since they were last asked about, for one-shot keys like R.
+  const tapped = new Set();
 
   const onKeyDown = (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target instanceof HTMLElement && e.target.closest('input, select, textarea, button')) return; // dev panel fields
     if (pressed.length < 32) pressed.push(e.code);
+    if (!e.repeat) tapped.add(e.code);
     const bit = KEYS[e.code];
     if (bit === undefined) return;
     e.preventDefault(); // stop arrows/space from scrolling
@@ -70,6 +73,8 @@ export function createInput(target = window) {
     presses: () => pressed.splice(0),
     /** Whether a key (KeyboardEvent.code) is held. For dev keys outside the INPUT map. */
     isDown: (code) => down.has(code),
+    /** Whether a key was pressed since the last time this asked about it. A tap between two frames still counts. */
+    tapped: (code) => tapped.delete(code),
     dispose() {
       target.removeEventListener('keydown', onKeyDown);
       target.removeEventListener('keyup', onKeyUp);

@@ -24,7 +24,7 @@ Every design decision lives in exactly one doc, and other docs link to it rather
   - no `Math.random` (use `shared/rng.js`);
   - no `Math.sin/cos/exp/pow` (use `shared/mathdet.js`);
   - no DOM, Node APIs, or wall-clock time.
-- **`step()` in `shared/physics.js` stays pure.** Rollback and PvP later depend on it.
+- **`step()` in `shared/physics.js` and `stepPlayer()` in `shared/sim.js` stay pure.** Prediction, rollback and PvP later depend on it.
 - **Worldgen output changes → bump `GEN_VERSION`** and update the golden hash in `test/worldgen.test.js`. Worldgen reads `ENVELOPE`, never `TUNING`.
 - **Stopping dev servers:** Node renames its process to `MainThread`, so `pgrep -x node` misses it. Match on the command line instead (`ps -eo pid,args`).
 - **The server is authoritative** for money, cargo, deaths and prices. The client only predicts its own movement.

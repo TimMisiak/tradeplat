@@ -5,10 +5,11 @@ import { createRng } from '../shared/rng.js';
 import { fbm, noise1, noise2 } from '../shared/noise.js';
 import { INPUT, createPlayer, step } from '../shared/physics.js';
 import { FLAG, TILE, TILE_FLAGS, TILE_SIZE, parseAsciiMap } from '../shared/tiles.js';
+import { enemyExtent } from '../shared/enemies.js';
 
 // Update ONLY for intentional generator changes, together with a GEN_VERSION bump
 // (clients check the hash against the server's). Say so in the commit.
-const GOLDEN = { seed: 1, genVersion: 3, hash: '182fea44' };
+const GOLDEN = { seed: 1, genVersion: 4, hash: 'b76d0095' };
 
 test('golden hash: generator output for a fixed seed is unchanged', () => {
   const w = generateWorld(GOLDEN.seed);
@@ -48,6 +49,47 @@ test('200 seeds: every post reachable from the spawn post, no pits, posts well-f
   }
   // All three kinds show up across seeds.
   for (const [k, n] of Object.entries(kinds)) assert.ok(n > 20, `${k} posts: ${n}`);
+});
+
+test('50 seeds: spikes and spawners stay out of post surroundings and fit the terrain', () => {
+  const T = TILE_SIZE;
+  const totals = { patroller: 0, flyer: 0, saw: 0, spikes: 0 };
+  for (let seed = 2000; seed < 2050; seed++) {
+    const w = generateWorld(seed);
+    const at = (x, y) => w.tiles[y * w.w + x];
+    const inRect = (r, x, y) => x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1;
+    for (let i = 0; i < w.tiles.length; i++) {
+      if (w.tiles[i] !== TILE.spike) continue;
+      totals.spikes++;
+      const x = i % w.w, y = (i - x) / w.w;
+      assert.ok(!w.posts.some((p) => inRect(p.noSpawn, x, y)), `seed ${seed}: spike at ${x},${y} near a post`);
+    }
+    w.spawners.forEach((sp, i) => {
+      const where = `seed ${seed} ${sp.kind} ${sp.id} at ${sp.x},${sp.y}`;
+      assert.equal(sp.id, i, where);
+      totals[sp.kind]++;
+      const e = enemyExtent(sp);
+      for (const p of w.posts) {
+        const r = p.noSpawn;
+        assert.ok(e.x1 <= r.x0 * T || e.x0 >= (r.x1 + 1) * T || e.y1 <= r.y0 * T || e.y0 >= (r.y1 + 1) * T, `${where}: reaches into ${p.name}`);
+      }
+      const q = sp.params;
+      if (sp.kind === 'patroller') {
+        const fy = q.floor / T;
+        for (let x = Math.floor((q.x0 - 6) / T); x <= Math.floor((q.x1 + 5) / T); x++) {
+          assert.equal(at(x, fy), TILE.solid, `${where}: no floor at ${x}`);
+          assert.equal(at(x, fy - 1), TILE.empty, `${where}: blocked at ${x}`);
+        }
+      } else {
+        // Flyers and saws only ever move through open air.
+        for (let y = Math.floor(e.y0 / T); y <= Math.floor((e.y1 - 1) / T); y++) {
+          for (let x = Math.floor(e.x0 / T); x <= Math.floor((e.x1 - 1) / T); x++) assert.equal(at(x, y), TILE.empty, `${where}: tile ${x},${y}`);
+        }
+      }
+    });
+  }
+  // Densities, per world on average (WORLDGEN.md § Pipeline stage 5).
+  for (const [k, n] of Object.entries(totals)) assert.ok(n / 50 >= (k === 'spikes' ? 100 : 8), `${k}: ${n / 50} per world`);
 });
 
 test('generation stays within budget', () => {

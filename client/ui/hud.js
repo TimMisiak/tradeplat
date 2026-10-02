@@ -1,4 +1,4 @@
-// HUD and leaderboard: money, hold, the post you're at, and net-worth ranking.
+// HUD and leaderboard: money, hold, the post you're at, net-worth ranking, and death messages.
 // Immediate-mode layout in virtual px (ARCHITECTURE.md § UI). No DOM.
 import { holdUsed } from '../../shared/trade.js';
 import { textWidth } from './text.js';
@@ -9,7 +9,8 @@ const BOARD_ROWS = 5;
  * @param {import('./text.js').UiBatch} ui
  * @param {{wallet: import('../../shared/trade.js').Wallet | null, post: {name: string} | null, postColor: number[] | null,
  *   netColor: number[], board: [number, string, number][], playerId: number, menuOpen: boolean,
- *   colors: Record<string, number[]>}} ctx
+ *   toast?: string | null, colors: Record<string, number[]>}} ctx
+ * toast: a message shown mid-screen for a while (a death and what it cost).
  */
 export function drawHud(ui, ctx) {
   const c = ctx.colors;
@@ -45,6 +46,14 @@ export function drawHud(ui, ctx) {
       ui.text(x0 + 4 + textWidth('00 '), y, name.slice(0, 10), color, c.shadow);
       ui.textRight(x0 + width - 4, y, String(worth), c.money, c.shadow);
     });
+  }
+
+  // Lower centre: the last death
+  if (ctx.toast) {
+    const tw = textWidth(ctx.toast);
+    // Below the player: you respawn at a post, and its name floats above you.
+    ui.rect(320 - tw / 2 - 8, 290, tw + 16, 18, c.panel);
+    ui.textCenter(320, 294, ctx.toast, c.bad, c.shadow);
   }
 
   // Bottom centre: how to trade, when standing at a post

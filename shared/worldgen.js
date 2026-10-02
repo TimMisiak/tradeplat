@@ -7,8 +7,9 @@
 import { createRng, hashString } from './rng.js';
 import { fbm, noise1, noise2 } from './noise.js';
 import { FLAG, SLOPE, TILE, TILE_FLAGS, createMap } from './tiles.js';
+import { enemyExtent } from './enemies.js';
 
-export const GEN_VERSION = 3;
+export const GEN_VERSION = 4;
 export const WORLD_W = 1024;
 export const WORLD_H = 256;
 
@@ -47,8 +48,8 @@ const MAX_REPAIR_ROUNDS = 3;
  *
  * @typedef {import('./tiles.js').TileMap & {
  *   version: number, seed: number, attempt: number,
- *   posts: Post[], spawnPost: number, spawners: object[], hash: string,
- *   stats: {tunnels: number, platforms: number, ramps: number, reachable: number},
+ *   posts: Post[], spawnPost: number, spawners: import('./enemies.js').Spawner[], hash: string,
+ *   stats: Record<string, number>,
  *   debug: {routes: [number, number][][], edges: [number, number][]},
  * }} World
  */
@@ -90,7 +91,7 @@ function tryGenerate(seed, w, h) {
   paintSurface(map, surface);
   for (const p of posts) stampPost(map, p);
   const { routes, edges } = carveRoutes(map, rng.fork('routes'), posts);
-  const stats = { tunnels: 0, platforms: 0, filled: 0, ramps: 0, reachable: 0 };
+  const stats = { tunnels: 0, platforms: 0, filled: 0, ramps: 0, reachable: 0, spikes: 0, spikesRemoved: 0, patrollers: 0, flyers: 0, saws: 0 };
   stats.platforms += addPlatforms(map, routes);
 
   // Reachability v1: flood fill from the spawn post, repairing with tunnels.
@@ -116,18 +117,46 @@ function tryGenerate(seed, w, h) {
 
   // Pits: fill in anywhere you could get to but not get back from, which raises
   // each pit's floor to where you can climb out. A post in a pit can't be filled.
-  for (let round = 0; ; round++) {
-    const { trapped, count } = findTraps(map, posts[spawnPost].spawn);
-    if (count === 0) break;
-    if (round >= MAX_REPAIR_ROUNDS) return { ok: false, error: `${count} trapped tiles` };
-    const stuck = posts.find((p) => trapped[idx(map, p.spawn.tx, p.spawn.ty)]);
+  // Stage 5's spikes go in after the first fill, so the pit check that confirms
+  // the fill also confirms the spikes made no new pits and cut off no post. If
+  // they did, the spike runs near the problem come out, and it checks again.
+  const spawn = posts[spawnPost].spawn;
+  const at = (p) => idx(map, p.spawn.tx, p.spawn.ty);
+  let traps = findTraps(map, spawn);
+  const before = traps.reached;
+  let spikes = null;
+  for (let fills = 0, removals = 0; ;) {
+    const { trapped, count } = traps;
+    const lost = spikes ? posts.filter((p) => before[at(p)] && !traps.reached[at(p)]) : [];
+    if (count === 0 && lost.length === 0) {
+      if (spikes) break;
+      spikes = placeSpikes(map, rng.fork('hazards'), posts, traps.reached);
+      traps = findTraps(map, spawn);
+      continue;
+    }
+    if (spikes && removals < 6) {
+      if (removeSpikes(map, spikes, trapped, lost, removals++, stats)) {
+        traps = findTraps(map, spawn);
+        continue;
+      }
+    }
+    if (lost.length) return { ok: false, error: 'spikes made a post unreachable' };
+    if (fills++ >= MAX_REPAIR_ROUNDS) return { ok: false, error: `${count} trapped tiles` };
+    const stuck = posts.find((p) => trapped[at(p)]);
     if (stuck) return { ok: false, error: `${stuck.name} is in a pit` };
     for (let i = 0; i < trapped.length; i++) if (trapped[i]) { map.tiles[i] = TILE.solid; stats.filled++; }
     // A ramp buried under the fill is just rock now.
     for (let i = w; i < trapped.length; i++) {
       if ((TILE_FLAGS[map.tiles[i]] & SLOPE) && trapped[i - w]) { map.tiles[i] = TILE.solid; stats.ramps--; }
     }
+    if (!spikes) spikes = placeSpikes(map, rng.fork('hazards'), posts, traps.reached);
+    traps = findTraps(map, spawn);
   }
+  stats.spikes = spikes.reduce((n, g) => n + g.tiles.length, 0);
+
+  // Stage 5, continued: enemy spawners, on the final map.
+  const spawners = placeSpawners(map, rng.fork('spawners'), posts, traps.reached, stats);
+
   for (const p of posts) delete p.isSpawn;
   return {
     ok: true,
@@ -135,7 +164,7 @@ function tryGenerate(seed, w, h) {
       version: GEN_VERSION, seed: 0, attempt: 0,
       w, h, tiles: map.tiles,
       posts, spawnPost,
-      spawners: [], // stage 5 (hazards + spawners) lands in M5
+      spawners,
       hash: '',
       stats,
       debug: { routes, edges },
@@ -506,6 +535,199 @@ function addPlatforms(map, paths) {
   return placed;
 }
 
+// Stage 5: hazards and spawners
+
+/** Chance per candidate spot at full danger (WORLDGEN.md § Pipeline stage 5). */
+const RATE = Object.freeze({ floorSpikes: 0.06, ceilingSpikes: 0.04, patroller: 0.8, flyer: 0.5, saw: 0.6 });
+/** Danger rises from 0 at a post's noSpawn edge to 1 this many tiles away. */
+const DANGER_RAMP = 40;
+/** Spawners keep at least this many tiles (Chebyshev, between anchors) from each other. */
+const SPAWNER_GAP = 8;
+const SAW_GAP = 24;
+
+/**
+ * 0 inside any post's noSpawn rect, rising linearly to 1 at DANGER_RAMP tiles
+ * from the nearest one, so the middle of a route is the most dangerous part.
+ */
+function danger(posts, x, y) {
+  let d = Infinity;
+  for (const p of posts) {
+    const r = p.noSpawn;
+    const dx = Math.max(r.x0 - x, 0, x - r.x1), dy = Math.max(r.y0 - y, 0, y - r.y1);
+    d = Math.min(d, Math.max(dx, dy));
+  }
+  return Math.min(1, d / DANGER_RAMP);
+}
+
+/**
+ * Spikes on floors (runs of 1–3 you can jump, with flat ground and headroom on
+ * both sides) and on high ceilings (with at least 5 open rows under them).
+ * `reached`: the pit check's standable tiles you can get to.
+ * @returns {{x: number, y: number, tiles: number[]}[]} the runs placed
+ */
+function placeSpikes(map, rng, posts, reached) {
+  const { w, h } = map;
+  const at = (x, y) => get(map, x, y);
+  const empty = (x, y) => at(x, y) === TILE.empty;
+  const clear = (x, y0, y1) => { for (let y = y0; y <= y1; y++) if (!empty(x, y)) return false; return true; };
+  // A flat spot to stand next to a spike run: plain ground, open above.
+  const ledge = (x, y) => clear(x, y - 3, y) && at(x, y + 1) === TILE.solid && reached[idx(map, x, y)];
+  const groups = [];
+  for (let y = 4; y < h - 4; y++) {
+    for (let x = 4; x < w - 8; x++) {
+      if (map.tiles[y * w + x] !== TILE.empty) continue;
+      // Floor spikes: run x..x+n-1 in feet row y.
+      if (map.tiles[(y + 1) * w + x] === TILE.solid && ledge(x - 1, y) && clear(x, y - 3, y)) {
+        const f = danger(posts, x, y);
+        if (f > 0 && rng.chance(RATE.floorSpikes * f)) {
+          const n = rng.int(1, 3);
+          let ok = ledge(x + n, y);
+          for (let i = 0; i < n && ok; i++) ok = clear(x + i, y - 3, y) && at(x + i, y + 1) === TILE.solid && danger(posts, x + i, y) > 0;
+          if (ok) {
+            const tiles = [];
+            for (let i = 0; i < n; i++) { set(map, x + i, y, TILE.spike); tiles.push(idx(map, x + i, y)); }
+            groups.push({ x, y, tiles });
+            x += n + 6;
+            continue;
+          }
+        }
+      }
+      // Ceiling spikes: hanging from plain rock with 5 open rows below.
+      if (map.tiles[(y - 1) * w + x] === TILE.solid && clear(x, y, y + 5)) {
+        const f = danger(posts, x, y);
+        if (f > 0 && rng.chance(RATE.ceilingSpikes * f)) {
+          const n = rng.int(1, 4);
+          const tiles = [];
+          for (let i = 0; i < n && at(x + i, y - 1) === TILE.solid && clear(x + i, y, y + 5) && danger(posts, x + i, y) > 0; i++) {
+            set(map, x + i, y, TILE.spike);
+            tiles.push(idx(map, x + i, y));
+          }
+          groups.push({ x, y, tiles });
+          x += n + 6;
+        }
+      }
+    }
+  }
+  return groups;
+}
+
+/**
+ * Take out the spike runs near a problem the pit check found: new trap tiles, or
+ * the spawn tile of a post the spikes cut off. Wider each round; on the last
+ * rounds, every run. Returns whether any were removed.
+ */
+function removeSpikes(map, groups, trapped, lost, round, stats) {
+  const w = map.w;
+  const bad = [];
+  for (let i = 0; i < trapped.length; i++) if (trapped[i] === 1) bad.push(i);
+  for (const p of lost) bad.push(idx(map, p.spawn.tx, p.spawn.ty));
+  const r = (lost.length ? 12 : 6) * (round + 1);
+  const near = (g) => round >= 4 || bad.some((i) => {
+    const tx = i % w, ty = (i - tx) / w;
+    return Math.abs(g.x - tx) <= r + 3 && Math.abs(g.y - ty) <= r;
+  });
+  let removed = 0;
+  for (const g of groups) {
+    if (!g.tiles.length || !near(g)) continue;
+    for (const i of g.tiles) map.tiles[i] = TILE.empty;
+    g.tiles = [];
+    removed++;
+  }
+  stats.spikesRemoved += removed;
+  return removed > 0;
+}
+
+/**
+ * Enemy spawners (shared/enemies.js describes their params and motion):
+ * saws across low passages, patrollers on flat runs of 4+ standable tiles,
+ * flyers in open air near the ground. All in reachable places (`reached`: the
+ * final pit check's standable tiles), nothing that can reach into a post's
+ * noSpawn rect, more of them further from posts.
+ * @returns {import('./enemies.js').Spawner[]}
+ */
+function placeSpawners(map, rng, posts, reached, stats) {
+  const { w, h } = map;
+  const at = (x, y) => get(map, x, y);
+  const empty = (x, y) => at(x, y) === TILE.empty;
+  const spawners = [];
+  const T = 16; // px per tile
+  const roomFor = (x, y, gap, kind) => spawners.every((s) => Math.max(Math.abs(s.x - x), Math.abs(s.y - y)) >= (kind && s.kind === kind ? Math.max(gap, SAW_GAP) : gap));
+  // Nothing an enemy can reach (its sword included) may overlap a post's noSpawn rect.
+  const add = (kind, x, y, params) => {
+    const sp = { id: spawners.length, kind, x, y, params };
+    const e = enemyExtent(sp);
+    const clear = posts.every(({ noSpawn: r }) => e.x1 <= r.x0 * T || e.x0 >= (r.x1 + 1) * T || e.y1 <= r.y0 * T || e.y0 >= (r.y1 + 1) * T);
+    if (!clear) return false;
+    spawners.push(sp);
+    stats[`${kind}s`]++;
+    return true;
+  };
+  const standable = (x, y) => empty(x, y) && empty(x, y - 1) && empty(x, y - 2) && at(x, y + 1) === TILE.solid && reached[idx(map, x, y)] && danger(posts, x, y) > 0;
+
+  // Saws: a vertical track across a low passage (a ceiling 4–6 rows over the
+  // floor), timed so the gap under it opens and closes. The saw is wider than its
+  // column, so the passage must be open over the columns either side too.
+  for (let y = 8; y < h - 4; y++) {
+    for (let x = 6; x < w - 6; x++) {
+      if (map.tiles[y * w + x] !== TILE.empty || !(TILE_FLAGS[map.tiles[(y + 1) * w + x]] & (FLAG.SOLID | SLOPE))) continue;
+      if (!reached[idx(map, x, y)] && !reached[idx(map, x, y + 1)]) continue;
+      let top = 0, bottom = h, ceiling = false;
+      for (let c = x - 1; c <= x + 1; c++) {
+        let up = y, down = y;
+        if (!empty(c, y)) { top = h; break; }
+        while (y - up < 7 && empty(c, up - 1)) up--;
+        while (down - y < 2 && empty(c, down + 1)) down++;
+        if (c === x) ceiling = at(c, up - 1) === TILE.solid;
+        top = Math.max(top, up);
+        bottom = Math.min(bottom, down);
+      }
+      const open = bottom - top + 1;
+      if (!ceiling || open < 4 || open > 6) continue;
+      if (!roomFor(x, y, SPAWNER_GAP / 2, 'saw') || !rng.chance(RATE.saw * danger(posts, x, y))) continue;
+      const r = 11, period = rng.int(100, 160);
+      if (add('saw', x, y, { x0: x * T + 8, y0: top * T + r + 1, x1: x * T + 8, y1: (bottom + 1) * T - r - 1, period, phase: rng.int(0, period - 1) })) x += 8;
+    }
+  }
+
+  // Patrollers: flat runs of at least 4 standable tiles, walking at most 12 of them.
+  for (let y = 4; y < h - 4; y++) {
+    for (let x = 4; x < w - 4; x++) {
+      if (map.tiles[(y + 1) * w + x] !== TILE.solid || !standable(x, y)) continue;
+      let n = 1;
+      while (x + n < w - 4 && standable(x + n, y)) n++;
+      if (n >= 4) {
+        const len = Math.min(n, rng.int(6, 12));
+        const x0 = x + rng.int(0, n - len);
+        const mid = x0 + (len >> 1);
+        if (roomFor(mid, y, SPAWNER_GAP) && rng.chance(RATE.patroller * danger(posts, mid, y))) {
+          add('patroller', mid, y, { x0: x0 * T + 6, x1: (x0 + len) * T - 6, floor: (y + 1) * T, speed: rng.pick([0.5, 0.75, 1]), phase: rng.int(0, 999) });
+        }
+      }
+      x += n;
+    }
+  }
+
+  // Flyers: open pockets with room for the whole path, and ground you can reach
+  // within 8 rows below, with open air between (so the pocket is reachable too).
+  for (let gy = 8; gy < h - 8; gy += 7) {
+    for (let gx = 8; gx < w - 8; gx += 7) {
+      const x = gx + rng.int(-2, 2), y = gy + rng.int(-2, 2);
+      const rx = rng.int(2, 4), ry = rng.int(1, 2);
+      if (!empty(x, y)) continue;
+      let ok = true;
+      for (let yy = y - ry - 1; yy <= y + ry + 1 && ok; yy++) for (let xx = x - rx - 1; xx <= x + rx + 1 && ok; xx++) ok = empty(xx, yy);
+      if (!ok) continue;
+      let ground = false;
+      for (let yy = y + ry + 2; yy <= y + 8 && !ground && empty(x, yy); yy++) ground = reached[idx(map, x, yy)] === 1;
+      const f = danger(posts, x, y);
+      if (!ground || !roomFor(x, y, SPAWNER_GAP) || !rng.chance(RATE.flyer * f)) continue;
+      const period = rng.int(150, 300);
+      add('flyer', x, y, { rx: rx * T, ry: ry * T, period, phase: rng.int(0, period - 1), path: rng.pick(['loop', 'eight']) });
+    }
+  }
+  return spawners;
+}
+
 // Stage 6: reachability
 
 /** 4-connected flood fill over tiles a player can occupy (not solid, not hazard). */
@@ -672,12 +894,13 @@ function carveTunnel(map, visited, to) {
 
 // Hash
 
-/** FNV-1a over the tiles and the post layout, as 8 hex digits. */
+/** FNV-1a over the tiles, the post layout and the spawners, as 8 hex digits. */
 export function hashWorld(world) {
   let h = 0x811c9dc5;
   const t = world.tiles;
   for (let i = 0; i < t.length; i++) h = Math.imul(h ^ t[i], 0x01000193);
-  const meta = JSON.stringify([world.version, world.w, world.h, world.spawnPost, world.posts.map((p) => [p.id, p.name, p.kind, p.x, p.y, p.w, p.h])]);
+  const meta = JSON.stringify([world.version, world.w, world.h, world.spawnPost, world.posts.map((p) => [p.id, p.name, p.kind, p.x, p.y, p.w, p.h]),
+    world.spawners.map((sp) => [sp.id, sp.kind, sp.x, sp.y, sp.params])]);
   h = hashString(meta, h >>> 0);
   return h.toString(16).padStart(8, '0');
 }

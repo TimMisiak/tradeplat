@@ -25,8 +25,8 @@ export const INPUT = Object.freeze({
   DOWN: 1 << 3,
   JUMP: 1 << 4,
   INTERACT: 1 << 5,
-  // Not movement: the host resets to spawn before this tick (dev R key until M5
-  // death/respawn). stepInput() handles it, and step() never sees it.
+  // Not movement: give up and die this tick (the R key), respawning at your last
+  // post without your cargo. stepPlayer() in shared/sim.js handles it, and step() never sees it.
   RESPAWN: 1 << 6,
 });
 /** Every bit a client may send. */
@@ -65,6 +65,9 @@ export const TUNING = Object.freeze({
   wallJumpY: 6.8,
   wallLockTicks: 8, // after a wall jump, input toward that wall is ignored
   wallCoyoteTicks: 5, // can still wall-jump this long after leaving the wall
+
+  // enemies (shared/sim.js, not step())
+  stompVel: 6.5, // bounce off a stomped enemy; holding jump keeps all of it, like a jump
 });
 
 /** Hard per-tick speed cap. Below one tile, so per-axis collision can't skip a tile. */
@@ -106,16 +109,6 @@ export function spawnAt(tx, ty, tuning = TUNING) {
   return createPlayer((tx + 0.5) * TILE_SIZE, (ty + 1) * TILE_SIZE, tuning);
 }
 
-/**
- * One tick as a host runs it: the RESPAWN bit resets to `spawn`, then step().
- * Client prediction, client replay and the server all go through this.
- * @param {PlayerState} p @param {number} input @param {PlayerState} spawn
- */
-export function stepInput(p, input, map, spawn, t = TUNING) {
-  if (input & INPUT.RESPAWN) p = spawn;
-  return step(p, input & ~INPUT.RESPAWN, map, t);
-}
-
 /** Short hash of a tuning table. Client and server compare it in welcome (ARCHITECTURE.md § Connection). */
 export function tuningHash(t = TUNING) {
   const text = Object.keys(t).sort().map((k) => `${k}=${t[k]}`).join(';');
@@ -129,10 +122,11 @@ export function sameState(a, b) {
 }
 
 /** Animation names, in wire order (ghost snapshots send the index). Match SPRITE_SPEC.player (ART.md). */
-export const ANIMS = Object.freeze(['idle', 'run', 'jump', 'fall', 'wallSlide']);
+export const ANIMS = Object.freeze(['idle', 'run', 'jump', 'fall', 'wallSlide', 'death']);
 
-/** Which animation fits this physics state. */
+/** Which animation fits this state. `dead` is set by shared/sim.js while a player waits to respawn. */
 export function animFor(p) {
+  if (p.dead > 0) return 'death';
   if (p.onGround) return Math.abs(p.vx) > 0.1 ? 'run' : 'idle';
   if (p.wallDir !== 0 && p.vy > 0) return 'wallSlide';
   return p.vy < 0 ? 'jump' : 'fall';

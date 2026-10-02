@@ -32,7 +32,8 @@ export const TILE_SPEC = Object.freeze({
  */
 export const SPRITE_SPEC = Object.freeze({
   player: { frame: [24, 24], anchor: [12, 24], required: ['idle', 'run', 'jump', 'fall', 'wallSlide'], optional: ['land', 'death'] },
-  patroller: { frame: [16, 16], anchor: [8, 16], required: ['walk'], optional: ['stomped'] },
+  // 32×24 leaves room for the sword. The body (and its 12×14 hitbox, shared/enemies.js) sits on the anchor.
+  patroller: { frame: [32, 24], anchor: [12, 24], required: ['walk'], optional: ['swing', 'stomped'] },
   flyer: { frame: [16, 16], anchor: [8, 8], required: ['fly'], optional: [] },
   saw: { frame: [32, 32], anchor: [16, 16], required: ['spin'], optional: [] },
   dust: { frame: [8, 8], anchor: [4, 8], required: ['puff'], optional: [] },

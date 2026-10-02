@@ -26,6 +26,16 @@ export function attachNet(httpServer, game) {
     for (const ws of sockets.values()) ws.send(frame);
   }
 
+  game.onEvent.push((p, e) => {
+    if (e.type === 'died') {
+      sockets.get(p.id)?.send(encode(MSG.DIED, { tick: e.tick, cause: e.cause, lost: e.lost, wallet: p.wallet }));
+    } else if (e.type === 'killed') {
+      // To everyone, not just the interest set: kills are rare and tiny, and a client
+      // that walks up to the enemy later must already know it's dead to predict it.
+      broadcast(encode(MSG.KILLED, { id: e.id, tick: e.tick }));
+    }
+  });
+
   game.onTick.push((tick) => {
     if (sockets.size === 0) return;
     if (tick % SNAPSHOT_EVERY === 0) {
@@ -90,6 +100,7 @@ export function attachNet(httpServer, game) {
             ack: player.seq,
             players: [...game.players.values()].filter((p) => p !== player).map((p) => [p.id, p.name]),
             wallet: player.wallet,
+            kills: game.enemies.kills,
           }));
           broadcast(encode(MSG.JOINED, { id: player.id, name: player.name }));
           sockets.set(player.id, ws);
@@ -100,9 +111,9 @@ export function attachNet(httpServer, game) {
           if (typeof msg.c === 'number') ws.send(encode(MSG.PONG, { c: msg.c, s: game.now() }));
           break;
         case MSG.INPUT:
-          // `tick` is for lag-compensated enemy checks (M5). Movement only needs seq.
+          // `tick` is the enemy tick of the first input (lag-compensated enemy checks).
           if (!player || !Array.isArray(msg.bits) || msg.bits.length > MAX_INPUT_BATCH) return;
-          game.receiveInput(player, msg.seq, msg.bits);
+          game.receiveInput(player, msg.seq, msg.bits, msg.tick);
           break;
         case MSG.TRADE: {
           if (!player || !Number.isInteger(msg.reqId)) return;
